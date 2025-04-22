@@ -1,0 +1,33 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File", // Configuration name
+            "type": "python", // Debugger type
+            "request": "launch", // Request type (launch or attach)
+            "program": "${file}", // The file to launch
+            "console": "integratedTerminal", // Where to show output (integrated terminal, external terminal, etc.)
+            "python": "/usr/bin/python3", // Specify the absolute path to the Python interpreter
+            // Or use the currently selected interpreter in VS Code:
+            // "python": "${command:python.interpreterPath}",
+            "justMyCode": true // Debug only user code (not library code)
+        },
+        {
+                "name": "Python: Train Synthetic Autoencoder",
+                "type": "python",
+                "request": "launch",
+                "program": "${workspaceFolder}/experiments/train_synthetic_autoencoder.py", // Path to your script
+                "console": "integratedTerminal",
+                "python": "${command:python.interpreterPath}", // Use the selected interpreter
+                "justMyCode": true,
+                "env": { // Optional: Set environment variables if needed
+                        "PYTHONPATH": "${workspaceFolder}"
+                },
+                "cwd": "${workspaceFolder}" // Set the current working directory
+        }
+        // Add other configurations if needed
+    ]
+}

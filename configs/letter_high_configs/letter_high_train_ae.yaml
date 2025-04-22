@@ -1,0 +1,91 @@
+exp_name: enzymes_ae
+data:
+  batch_size: 128
+  name: ENZYMES
+  dir: datasets/
+  init: degrees
+  max_feat_num: 10
+  max_node_num: 125
+  test_split: 0.2 # 对于元训练阶段
+  train_class_num: 4
+  test_class_num: 2
+device: cuda:0
+model:
+  encoder: HGCN
+  enc_layers: 3
+  decoder: HGCN
+  dec_layers: 3
+  layer_type: HGAT
+  adj: ScoreNetworkA_poincare
+  x: ScoreNetworkX_poincare
+  use_centroid: false
+  act: LeakyReLU
+  adim: 32
+  aggregation_method: sum
+  c: 0.01
+  c_final: 4
+  c_hid: 8
+  c_init: 2
+  conv: GCN
+  depth: 5
+  dim: 10  #latent space dim
+  dropout: 0.0
+  edge_dim: 1
+  hidden_dim: 32
+  learnable_c: false
+  manifold: Lorentz
+  msg_transform: true
+  nhid: 32
+  normalization_factor: 1
+  num_heads: 4
+  num_layers: 7
+  num_linears: 2
+  pred_edge: true
+  use_proto_loss: true
+  sum_transform: true
+  use_norm: ln
+
+model_type: ae
+
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.2
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+seed: 1
+
+train:
+  ema: 0.999
+  eps: 1.0e-05
+  grad_norm: 1.0
+  kl_regularization: 1.0e-05
+  edge_weight: 1.0e-02
+  proto_weight: 1.0e-02
+  lr: 0.01
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 1000
+  print_interval: 50
+  reduce_mean: true
+  save_interval: 500
+  weight_decay: 0.0001
+  
+wandb:
+  no_wandb: false
+  online: true # Set to false for offline logging
+  project: MHGDM
+  wandb_usr: huangyr
+  entity: huangyr_team
+
+fsl:
+  K_shot: 5
+  N_way: 3
+  P_num: 10
+  query_size: 10
+
