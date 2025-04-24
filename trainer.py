@@ -1,12 +1,11 @@
 import os
 import time
 
-import geoopt
+
 import ml_collections
 
-import configs
 import wandb
-from tqdm import tqdm, trange
+from tqdm import  trange
 import numpy as np
 import torch
 
@@ -192,11 +191,11 @@ class Trainer(object):
     def train_score(self, ts=None):
         ts = time.strftime("%Y%m%d_%H%M%S")
         self.config.exp_name
-        if self.config.ae_path is None:
+        if self.config.model.ae_path is None:
             Encoder = None
             manifold = get_manifold(self.config.model.manifold, self.config.model.c)
         else:
-            checkpoint = torch.load(self.config.ae_path, map_location=self.config.device)
+            checkpoint = torch.load(self.config.model.ae_path, map_location=self.config.device)
             AE_state_dict = checkpoint["ae_state_dict"]
             AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
             AE_config.model.dropout = 0
@@ -228,7 +227,7 @@ class Trainer(object):
         print("\033[91m" + f"{self.ckpt}" + "\033[0m")
 
         # -------- Load data models, optimizers, ema --------
-        self.train_loader, self.test_loader,self.proto_tensor= load_data(self.config,encoder=Encoder)
+        self.train_loader, self.test_loader= load_data(self.config)
         self.model_x, self.optimizer_x, self.scheduler_x = load_model_optimizer(
             self.params_x, self.config, self.device
         )
@@ -306,8 +305,9 @@ class Trainer(object):
             self.model_adj.eval()
             for _, test_b in enumerate(self.test_loader):
 
-                x, adj, labels = load_batch(                    test_b, self.device)
-                loss_subject = (x, adj)
+                x, adj, labels = load_batch(test_b, self.device)
+                # Include labels in the loss_subject tuple
+                loss_subject = (x, adj, labels) 
 
                 with torch.no_grad():
                     self.ema_x.store(self.model_x.parameters())
@@ -315,7 +315,8 @@ class Trainer(object):
                     self.ema_adj.store(self.model_adj.parameters())
                     self.ema_adj.copy_to(self.model_adj.parameters())
 
-                    loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, *loss_subject)
+                    # Now *loss_subject will unpack x, adj, and labels
+                    loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, *loss_subject) 
                     self.test_x.append(loss_x.item())
                     self.test_adj.append(loss_adj.item())
 

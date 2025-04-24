@@ -54,18 +54,7 @@ fsl:
 
 model_type: ae
 
-sde:
-  adj:
-    beta_max: 1.0
-    beta_min: 0.2
-    num_scales: 1000
-    type: VE
-  x:
-    beta_max: 1.0
-    beta_min: 0.1
-    num_scales: 1000
-    type: VP
-seed: 1
+
 
 train:
   ema: 0.999
@@ -83,11 +72,3 @@ train:
   save_interval: 50
   weight_decay: 0.0001
   
-wandb:
-  no_wandb: true
-  online: true # Set to false for offline logging
-  project: MHGDM
-  wandb_usr: huangyr
-  entity: huangyr_team
-
-

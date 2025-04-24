@@ -7,7 +7,6 @@ import networkx as nx
 import torch
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
-from wandb import config
 from utils.graph_utils import init_features, graphs_to_tensor
 import json
 import math
@@ -16,12 +15,13 @@ from sklearn.cluster import KMeans
 from torch.utils.data import Dataset, DataLoader
 from utils.graph_utils import node_flags
 
-def load_data(config, encoder=None):
+
+def load_data(config):
 
     dataset = MyDataset(config)
     # 返回 MyDataset 的训练和测试数据加载器
     return dataset.get_loaders()
- 
+
 
 class Graph(object):
     def __init__(self, g, label, node_tags=None, node_features=None):
@@ -32,32 +32,34 @@ class Graph(object):
         self.node_features = 0
         self.edge_mat = 0
         self.max_neighbor = 0
+
+
 import os
 import torch
 import networkx as nx
 import numpy as np
 import pickle
 
+
 def load_from_file(config, degree_as_tag):
-    # 定义文件路径
     file_path = os.path.join("./datasets", config.data.name, f"{config.data.name}.txt")
-    # 存储数据的文件路径
-    save_file_path = os.path.join("./datasets", config.data.name, f"{config.data.name}_processed.pkl")
-    
-    # 检查是否存在已经处理过的数据文件
+    save_file_path = os.path.join(
+        "./datasets", config.data.name, f"{config.data.name}_processed.pkl"
+    )
+
     if os.path.exists(save_file_path):
         print(f"Loading processed data from: {save_file_path}")
         with open(save_file_path, "rb") as f:
-            g_list, label_dict, tagset, all_nx_graphs = pickle.load(f)
-        return g_list, label_dict, tagset, all_nx_graphs
-    
-    # 如果文件不存在，进行数据加载
-    print(f"Loading data from: {file_path}")
+            return pickle.load(f)
 
+    print(f"Loading data from: {file_path}")
     g_list = []
     label_dict = {}
     feat_dict = {}
     all_nx_graphs = []
+
+    for_graph_node_counts = []
+    for_graph_feat_dims = []
 
     with open(file_path, "r") as f:
         n_g = int(f.readline().strip())
@@ -99,10 +101,12 @@ def load_from_file(config, degree_as_tag):
 
             if node_features:
                 node_features = np.stack(node_features)
+                for_graph_feat_dims.append(node_features.shape[1])
             else:
-                node_features = None
+                for_graph_feat_dims.append(1)  # e.g., scalar tag
 
             assert len(g) == n
+            for_graph_node_counts.append(n)
 
             g_list.append(Graph(g, l, node_tags))
             all_nx_graphs.append(g)
@@ -128,39 +132,38 @@ def load_from_file(config, degree_as_tag):
             if np.sum(np.array(graph_obj.node_tags) == 0) > 0:
                 print(f"Graph with isolated node found. Degrees: {graph_obj.node_tags}")
 
-    tagset = set()
-    for graph_obj in g_list:
-        tagset.update(set(graph_obj.node_tags))
-
-    tagset = sorted(list(tagset))
+    tagset = sorted(set(tag for g in g_list for tag in g.node_tags))
     tag2index = {tag: i for i, tag in enumerate(tagset)}
 
-    for graph_obj in g_list:
+    for i, graph_obj in enumerate(g_list):
         num_nodes = len(graph_obj.node_tags)
         node_indices = [tag2index[tag] for tag in graph_obj.node_tags]
         graph_obj.node_features = torch.zeros(num_nodes, len(tagset))
         graph_obj.node_features[torch.arange(num_nodes), node_indices] = 1
 
-    # 将处理后的数据保存到文件
+        nx_graph = all_nx_graphs[i]
+        for node_idx in range(num_nodes):
+            if node_idx in nx_graph.nodes:
+                nx_graph.nodes[node_idx]["feature"] = graph_obj.node_features[node_idx].numpy()
+            else:
+                print(
+                    f"Warning: Node {node_idx} not found in nx_graph {i} while assigning features."
+                )
+
+    # 计算 max_node_num 和 max_feat_num
+    max_node_num = max(for_graph_node_counts) if for_graph_node_counts else 0  # Handle empty list
+    max_feat_num = max(for_graph_feat_dims) if for_graph_feat_dims else 0  # Handle empty list
+
+    # If degrees are used as tags, the feature dimension is the number of unique tags
+    if degree_as_tag:
+        max_feat_num = len(tagset)
+
+    # Save processed data including the potentially updated max_feat_num
     with open(save_file_path, "wb") as f:
-        pickle.dump((g_list, label_dict, tagset, all_nx_graphs), f)
+        # Save all necessary components including the final max values
+        pickle.dump((g_list, label_dict, tagset, all_nx_graphs, max_node_num, max_feat_num), f)
 
-    return g_list, label_dict, tagset, all_nx_graphs
-
-if __name__ == "__main__":
-
-
-
-    import yaml
-    from trainer import Trainer
-    import yaml
-    import ml_collections
-
-    yaml_config_path = pathlib.Path(__file__).parent.resolve().parent / "configs" / "enzymes_configs" / "enzymes_train_score.yaml"
-    with open(yaml_config_path, "r") as f:
-        config_dict = yaml.safe_load(f)
-        config = ml_collections.ConfigDict(config_dict)
-    load_from_file(config, degree_as_tag=True)
+    return g_list, label_dict, tagset, all_nx_graphs, max_node_num, max_feat_num
 
 
 class MyDataset:
@@ -172,11 +175,21 @@ class MyDataset:
         self.train_nx_graphs = []
         self.test_nx_graphs = []
 
+        (
+            all_graphs,
+            label_dict,
+            tagset,
+            all_nx_graphs,
+            self.config.data.max_node_num,
+            self.config.data.max_feat_num,
+        ) = load_from_file(config=self.config, degree_as_tag=True)
 
-        all_graphs, label_dict, tagset, all_nx_graphs = load_from_file(
-            config=self.config, degree_as_tag=True
-        )
-
+        # Calculate and store max_node_num and max_feat_num
+        self.max_node_num = max(len(g.nodes) for g in all_nx_graphs) if all_nx_graphs else 0
+        self.tagset = tagset  # Store tagset
+        self.max_feat_num = len(
+            self.tagset
+        )  # Feature dimension is based on the number of unique tags (degrees)
 
         with open("./datasets/{}/train_test_classes.json".format(config.data.name), "r") as f:
             all_class_splits = json.load(f)
@@ -219,21 +232,21 @@ class MyDataset:
 
         self.total_test_g_list = []
         for index in range(self.test_classes_num):
-            query_pool_for_class = list(self.test_tasks[index])[self.config.fsl.K_shot :]
+            query_pool_for_class = list(self.test_tasks[index])[self.config.fsl_task.K_shot :]
             self.total_test_g_list.extend(query_pool_for_class)
 
         from numpy.random import RandomState
 
         rd = RandomState(0)
         rd.shuffle(self.total_test_g_list)
-        
 
     def get_loaders(self):
         def make_loader(nx_graphs):
             adjs_tensor = graphs_to_tensor(nx_graphs, self.config.data.max_node_num)
             x_tensor = init_features(
-                self.config.data.init, adjs_tensor, self.config.data.max_feat_num
+                self.config.data.init, adjs_tensor
             )
+
             labels_tensor = torch.LongTensor([nx_g.graph["label"] for nx_g in nx_graphs])
             dataset = TensorDataset(x_tensor, adjs_tensor, labels_tensor)
             loader = DataLoader(
@@ -301,7 +314,3 @@ class MyDataset:
                 query_set.append(current_query_graphs)
 
         return {"support_set": support_set, "query_set": query_set, "append_count": append_count}
-
-
-
-

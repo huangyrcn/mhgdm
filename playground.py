@@ -1,64 +1,72 @@
+import sys, pathlib
+sys.path.append(str(pathlib.Path(__file__).parent.parent.resolve()))
+
+import yaml
+import ml_collections
+import networkx as nx
 import torch
-import geoopt
-from geoopt import PoincareBall, Lorentz
+import numpy as np # Add numpy import
+
+from utils.data_utils import load_from_file
+
+# Load configuration (using the example from data_utils.py)
+yaml_config_path = (
+    pathlib.Path(__file__).parent.resolve()
+    / "configs"
+    / "enzymes_configs"
+    / "enzymes_train_score.yaml"
+)
+with open(yaml_config_path, "r") as f:
+    config_dict = yaml.safe_load(f)
+    config = ml_collections.ConfigDict(config_dict)
+
+# Call load_from_file
+g_list, label_dict, tagset, all_nx_graphs = load_from_file(config, degree_as_tag=True)
+
+# Check if any graphs were loaded using all_nx_graphs
+if all_nx_graphs:
+    # Get the first graph directly from all_nx_graphs
+    first_nx_graph = all_nx_graphs[0]
+    adj_matrix_sparse = nx.adjacency_matrix(first_nx_graph)
+    adj_matrix_dense = adj_matrix_sparse.todense()
 
 
-def initialization_on_manifold(
-    x_euclidean: torch.Tensor, manifold: geoopt.Manifold
-) -> torch.Tensor:
-    """
-    Initialize a Euclidean point onto a given manifold (Lorentz or Poincare).
-    Args:
-        x_euclidean (Tensor): Euclidean input of shape (..., dim)
-        manifold (geoopt.Manifold): An instance of Lorentz or Poincare manifold
-    Returns:
-        Tensor: Point on the manifold
-    """
-    if isinstance(manifold, geoopt.Lorentz):
-        # 限制范数，避免过大带来数值不稳定
-        x_euclidean = torch.nn.functional.normalize(x_euclidean, dim=-1) * 0.1
-        # 拼接时间维度为 0 的切向量
-        zero_time = torch.zeros_like(x_euclidean[..., :1])
-        x_tangent = torch.cat([zero_time, x_euclidean], dim=-1)  # (..., d+1)
-        return manifold.expmap0(x_tangent)
+    node_features_list = []
+    for node_id in sorted(first_nx_graph.nodes()): # Ensure consistent node order
+            feature_data = first_nx_graph.nodes[node_id]['feature']
+            node_features_list.append(torch.from_numpy(feature_data))
+    feature_matrix = torch.stack(node_features_list).float() # Ensure float type
 
-    elif isinstance(manifold, geoopt.PoincareBall):
-        # 控制模长避免靠近边界
-        x_euclidean = torch.tanh(x_euclidean) * 0.9
-        return manifold.expmap0(x_euclidean)
+    print("First Graph (from all_nx_graphs):")
+    print("\nAdjacency Matrix (dense):")
+    print(adj_matrix_dense)
+    print("\nFeature Matrix (from node attributes):")
+    print(feature_matrix)
+    print(f"\nFeature Matrix Shape: {feature_matrix.shape}")
+    print(f"Adjacency Matrix Shape: {adj_matrix_dense.shape}")
 
-    else:
-        raise NotImplementedError(f"Unsupported manifold type: {type(manifold)}")
+# Check if any graphs were loaded
+if g_list: # Check g_list instead of all_nx_graphs
+    # Get the first graph object
+    first_graph_obj = g_list[0]
+    # Get the networkx graph from the Graph object
+    first_nx_graph = first_graph_obj.g
 
+    # Get the adjacency matrix (as a SciPy sparse matrix)
+    adj_matrix_sparse = nx.adjacency_matrix(first_nx_graph)
+    # Convert to dense numpy array for printing if needed
+    adj_matrix_dense = adj_matrix_sparse.todense()
 
-def is_on_lorentz_manifold(x, atol=1e-5):
-    """
-    判断一个向量是否在洛伦兹流形上。
-    点需满足 <x, x>_L ≈ 1 且 x[..., 0] > 0
-    """
-    time_sq = x[..., 0] ** 2
-    space_sq = x[..., 1:].pow(2).sum(dim=-1)
-    lorentz_inner = time_sq - space_sq  # (...,)
+    # Get the feature matrix (already a torch tensor)
+    feature_matrix = first_graph_obj.node_features
 
-    # 判断每个点是否满足 <x, x> ≈ 1
-    inner_valid = torch.all(
-        torch.isclose(lorentz_inner, torch.tensor(1.0, device=x.device), atol=atol)
-    )
-    time_positive = (x[..., 0] > 0).all()
+    print("First Graph:")
+    print("\nAdjacency Matrix (dense):")
+    print(adj_matrix_dense)
+    print("\nFeature Matrix:")
+    print(feature_matrix)
+    print(f"\nFeature Matrix Shape: {feature_matrix.shape}")
+    print(f"Adjacency Matrix Shape: {adj_matrix_dense.shape}")
 
-    result = inner_valid and time_positive
-    print(f"is_on_lorentz_manifold: {result}")
-    return result
-
-
-# 创建流形
-lorentz_manifold = Lorentz(k=0.01)
-
-
-# Euclidean 向量
-x_e = torch.load("x_data.pt")
-
-# 映射到 Lorentz 流形
-x_l = initialization_on_manifold(x_e, lorentz_manifold)
-print(x_l)
-is_on_lorentz_manifold(x_l)
+else:
+    print("No graphs were loaded.")

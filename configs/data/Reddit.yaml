@@ -1,0 +1,10 @@
+
+batch_size: 128
+dir: datasets/
+init: degrees
+max_feat_num: 524
+max_node_num: 3782
+name: Reddit
+test_class_num: 4
+test_split: 0.2
+train_class_num: 7

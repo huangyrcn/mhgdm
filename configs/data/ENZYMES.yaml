@@ -1,0 +1,9 @@
+batch_size: 64
+dir: datasets/
+init: degrees
+max_feat_num: 10
+max_node_num: 125
+name: ENZYMES
+test_class_num: 2
+test_split: 0.2
+train_class_num: 4

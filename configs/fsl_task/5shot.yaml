@@ -1,0 +1,5 @@
+
+N_way: ${data.test_class_num}  # 🔥 重点在这里
+K_shot: 5
+query_size: 10
+P_num: 10

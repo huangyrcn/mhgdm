@@ -1,0 +1,77 @@
+# configs/config.yaml
+defaults:
+  - _self_
+  - data : ENZYMES
+  - fsl_task : 10shot
+  - model : score
+
+
+exp_name: "modify_score_model"
+seed: 4
+device: cuda
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false
+
+wandb:
+  no_wandb: true
+  online: true # Set to false for offline logging
+  project: MHGDM
+  wandb_usr: huangyr
+  entity: huangyr_team
+
+
+
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.2
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+
+train:
+  ema: 0.999
+  eps: 1.0e-05
+  grad_norm: 1.0
+  kl_regularization: 1.0e-05
+  edge_weight: 1.0e-02
+  proto_weight: 1.0e-02
+  lr: 0.01
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 1000
+  print_interval: 50
+  reduce_mean: true
+  save_interval: 50
+  weight_decay: 0.0001
+  
+
+sample:
+  eps: 0.0001
+  noise_removal: true
+  probability_flow: false
+  seed: 1
+  use_ema: true
+
+sampler:
+  corrector: Langevin
+  n_steps: 1
+  predictor: Euler
+  scale_eps_A: '1.0'
+  scale_eps_x: '1.0'
+  snr_A: '0.25'
+  snr_x: '0.25'

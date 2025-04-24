@@ -61,8 +61,7 @@ def get_sde_loss_fn(
     )
 
     def loss_fn(model_x, model_adj, x, adj, labels):
-        # Print the labels for the current batch
-        print(f"Graph Labels: {labels}")
+
         flags = node_flags(adj)
         if encoder is not None:
             posterior = encoder(x, adj, flags)

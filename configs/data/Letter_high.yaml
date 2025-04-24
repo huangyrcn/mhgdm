@@ -1,0 +1,10 @@
+
+batch_size: 128
+dir: datasets/
+init: degrees
+max_feat_num: 5
+max_node_num: 9
+name: Letter_high
+test_class_num: 4
+test_split: 0.2
+train_class_num: 11

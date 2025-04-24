@@ -1,0 +1,10 @@
+
+batch_size: 128
+dir: datasets/
+init: degrees
+max_feat_num: 10
+max_node_num: 25
+name: TRIANGLES
+test_class_num: 3
+test_split: 0.2
+train_class_num: 7

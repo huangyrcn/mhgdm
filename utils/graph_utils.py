@@ -38,28 +38,25 @@ def node_flags(adj, eps=1e-5):
         flags = flags[:,0,:]
     return flags
 
+def init_features(init, adjs=None, nfeat=None):
+    if init in ['zeros', 'ones'] and nfeat is None:
+        raise ValueError(f"nfeat must be specified for init={init}")
 
-# -------- Create initial node features --------
-def init_features(init, adjs=None, nfeat=10):
-
-    if init=='zeros':
+    if init == 'zeros':
         feature = torch.zeros((adjs.size(0), adjs.size(1), nfeat), dtype=torch.float32, device=adjs.device)
-    elif init=='ones':
+    elif init == 'ones':
         feature = torch.ones((adjs.size(0), adjs.size(1), nfeat), dtype=torch.float32, device=adjs.device)
-    elif init=='degrees':
-        feature = adjs.sum(dim=-1).to(torch.long)
-        num_classes = nfeat
-        try:
-            feature = F.one_hot(feature, num_classes=num_classes).to(torch.float32)
-        except:
-            print(feature.max().item())
-            raise NotImplementedError(f'max_feat_num mismatch')
+    elif init == 'degrees':
+        degrees = adjs.sum(dim=-1).to(torch.long)
+        if nfeat is None:
+            nfeat = degrees.max().item() + 1
+        feature = F.one_hot(degrees, num_classes=nfeat).to(torch.float32)
     else:
         raise NotImplementedError(f'{init} not implemented')
 
     flags = node_flags(adjs)
-
     return mask_x(feature, flags)
+
 
 
 # -------- Sample initial flags tensor from the training graph set --------
