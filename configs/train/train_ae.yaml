@@ -1,0 +1,16 @@
+
+ema: 0.999
+eps: 1.0e-05
+grad_norm: 1.0
+kl_regularization: 1.0e-05
+edge_weight: 1.0e-02
+proto_weight: 1.0e-02
+lr: 0.01
+lr_decay: 0.999
+lr_schedule: true
+num_epochs: 1000
+print_interval: 50
+reduce_mean: true
+save_interval: 50
+weight_decay: 0.0001
+  

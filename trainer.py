@@ -348,6 +348,7 @@ class Trainer(object):
                     commit=True,
                 )
             # endregion
+            
             # region -------- Save checkpoints --------
             if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
                 save_path = (
@@ -369,10 +370,8 @@ class Trainer(object):
                 
                 device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
                 if self.config.data.name == "ENZYMES":
-                    config = getattr(config, "default_enzymes_sample").get_config(
-                        device, ckpt, snr_x, scale_eps_x
-                    )
-                    eval_dict = Sampler(config).sample(independent=False)    
+
+                    eval_dict = Sampler(self.config).sample(independent=False)    
                 eval_dict["epoch"] = epoch + 1
                 wandb.log(eval_dict, commit=True)
                 logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)

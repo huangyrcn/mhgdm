@@ -4,6 +4,7 @@ defaults:
   - data : ENZYMES
   - fsl_task : 10shot
   - model : score
+  - train : score
 
 
 exp_name: "modify_score_model"
