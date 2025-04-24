@@ -36,7 +36,7 @@ class Trainer(object):
         self.seed = load_seed(self.config.seed)
         self.device = load_device(self.config)
 
-        self.train_loader, self.test_loader = load_data(self.config)
+
 
     def train_ae(self):
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -56,7 +56,8 @@ class Trainer(object):
         self.ckpt = f"{self.config.exp_name}"+f"_{ts}"
         print("\033[91m" + f"{self.ckpt}" + "\033[0m")
 
-        # -------- Load models, optimizers, ema --------
+        # -------- Load data models, optimizers --------
+        self.train_loader, self.test_loader = load_data(self.config)
         self.model, self.optimizer, self.scheduler = load_model_optimizer(
             self.config.to_dict(), self.config, self.device
         )
@@ -226,7 +227,8 @@ class Trainer(object):
         self.ckpt = f"{self.config.exp_name}"+f"_{ts}"
         print("\033[91m" + f"{self.ckpt}" + "\033[0m")
 
-        # -------- Load models, optimizers, ema --------
+        # -------- Load data models, optimizers, ema --------
+        self.train_loader, self.test_loader,self.proto_tensor= load_data(self.config,encoder=Encoder)
         self.model_x, self.optimizer_x, self.scheduler_x = load_model_optimizer(
             self.params_x, self.config, self.device
         )
@@ -246,6 +248,7 @@ class Trainer(object):
         start_log(logger, self.config)
         train_log(logger, self.config)
 
+
         self.loss_fn = load_loss_fn(self.config, manifold=manifold, encoder=Encoder)
 
         # -------- 轮次--------
@@ -261,13 +264,15 @@ class Trainer(object):
 
             self.model_x.train()
             self.model_adj.train()
+        
 
             # region train
             for _, train_b in enumerate(self.train_loader):
-                x, adj, labels = load_batch(
+                x, adj, labels= load_batch(
                     train_b, self.device
                 )  # Added labels to unpack the third value
-                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj)
+                # Pass labels to the loss function
+                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj, labels)
                 if torch.isnan(loss_x):
                     raise ValueError("NaN")
                 self.optimizer_x.zero_grad()
@@ -361,15 +366,15 @@ class Trainer(object):
                 )
                 # region -------- Sample evaluation --------
                 
-                # device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
-                # if self.config.data.name == "ENZYMES":
-                #     config = getattr(config, "default_enzymes_sample").get_config(
-                #         device, ckpt, snr_x, scale_eps_x
-                #     )
-                #     eval_dict = Sampler(config).sample(independent=False)    
-                # eval_dict["epoch"] = epoch + 1
-                # wandb.log(eval_dict, commit=True)
-                # logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
+                device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
+                if self.config.data.name == "ENZYMES":
+                    config = getattr(config, "default_enzymes_sample").get_config(
+                        device, ckpt, snr_x, scale_eps_x
+                    )
+                    eval_dict = Sampler(config).sample(independent=False)    
+                eval_dict["epoch"] = epoch + 1
+                wandb.log(eval_dict, commit=True)
+                logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
 
                 # endregion
                 
@@ -393,4 +398,3 @@ class Trainer(object):
         # 并最终在查询集上评估分类性能
         print("Meta-testing...")
 
-        

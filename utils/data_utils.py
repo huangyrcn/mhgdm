@@ -1,19 +1,27 @@
 import os
+import sys, pathlib
+
+sys.path.append(str(pathlib.Path(__file__).parent.parent.resolve()))
 import pickle
 import networkx as nx
 import torch
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
+from wandb import config
 from utils.graph_utils import init_features, graphs_to_tensor
 import json
 import math
 from collections import defaultdict
+from sklearn.cluster import KMeans
+from torch.utils.data import Dataset, DataLoader
+from utils.graph_utils import node_flags
 
+def load_data(config, encoder=None):
 
-def load_data(config):
-    dataset = Dataset(config)
+    dataset = MyDataset(config)
+    # 返回 MyDataset 的训练和测试数据加载器
     return dataset.get_loaders()
-
+ 
 
 class Graph(object):
     def __init__(self, g, label, node_tags=None, node_features=None):
@@ -24,16 +32,32 @@ class Graph(object):
         self.node_features = 0
         self.edge_mat = 0
         self.max_neighbor = 0
-
+import os
+import torch
+import networkx as nx
+import numpy as np
+import pickle
 
 def load_from_file(config, degree_as_tag):
+    # 定义文件路径
+    file_path = os.path.join("./datasets", config.data.name, f"{config.data.name}.txt")
+    # 存储数据的文件路径
+    save_file_path = os.path.join("./datasets", config.data.name, f"{config.data.name}_processed.pkl")
+    
+    # 检查是否存在已经处理过的数据文件
+    if os.path.exists(save_file_path):
+        print(f"Loading processed data from: {save_file_path}")
+        with open(save_file_path, "rb") as f:
+            g_list, label_dict, tagset, all_nx_graphs = pickle.load(f)
+        return g_list, label_dict, tagset, all_nx_graphs
+    
+    # 如果文件不存在，进行数据加载
+    print(f"Loading data from: {file_path}")
+
     g_list = []
     label_dict = {}
     feat_dict = {}
     all_nx_graphs = []
-
-    file_path = os.path.join("./datasets", config.data.name, f"{config.data.name}.txt")
-    print(f"Loading data from: {file_path}")
 
     with open(file_path, "r") as f:
         n_g = int(f.readline().strip())
@@ -116,10 +140,30 @@ def load_from_file(config, degree_as_tag):
         node_indices = [tag2index[tag] for tag in graph_obj.node_tags]
         graph_obj.node_features = torch.zeros(num_nodes, len(tagset))
         graph_obj.node_features[torch.arange(num_nodes), node_indices] = 1
+
+    # 将处理后的数据保存到文件
+    with open(save_file_path, "wb") as f:
+        pickle.dump((g_list, label_dict, tagset, all_nx_graphs), f)
+
     return g_list, label_dict, tagset, all_nx_graphs
 
+if __name__ == "__main__":
 
-class Dataset:
+
+
+    import yaml
+    from trainer import Trainer
+    import yaml
+    import ml_collections
+
+    yaml_config_path = pathlib.Path(__file__).parent.resolve().parent / "configs" / "enzymes_configs" / "enzymes_train_score.yaml"
+    with open(yaml_config_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+        config = ml_collections.ConfigDict(config_dict)
+    load_from_file(config, degree_as_tag=True)
+
+
+class MyDataset:
     def __init__(self, config):
         self.dataset_name = config.data.name
         self.config = config
@@ -128,12 +172,11 @@ class Dataset:
         self.train_nx_graphs = []
         self.test_nx_graphs = []
 
+
         all_graphs, label_dict, tagset, all_nx_graphs = load_from_file(
             config=self.config, degree_as_tag=True
         )
 
-        all_classes = list(label_dict.keys())
-        self.tagset = tagset
 
         with open("./datasets/{}/train_test_classes.json".format(config.data.name), "r") as f:
             all_class_splits = json.load(f)
@@ -183,14 +226,15 @@ class Dataset:
 
         rd = RandomState(0)
         rd.shuffle(self.total_test_g_list)
+        
 
     def get_loaders(self):
-        def make_loader(nx_graphs, graphs):
+        def make_loader(nx_graphs):
             adjs_tensor = graphs_to_tensor(nx_graphs, self.config.data.max_node_num)
             x_tensor = init_features(
                 self.config.data.init, adjs_tensor, self.config.data.max_feat_num
             )
-            labels_tensor = torch.LongTensor([g.label for g in graphs])
+            labels_tensor = torch.LongTensor([nx_g.graph["label"] for nx_g in nx_graphs])
             dataset = TensorDataset(x_tensor, adjs_tensor, labels_tensor)
             loader = DataLoader(
                 dataset,
@@ -201,8 +245,8 @@ class Dataset:
             )
             return loader
 
-        train_loader = make_loader(self.train_nx_graphs, self.train_graphs)
-        test_loader = make_loader(self.test_nx_graphs, self.test_graphs)
+        train_loader = make_loader(self.train_nx_graphs)
+        test_loader = make_loader(self.test_nx_graphs)
         return train_loader, test_loader
 
     def sample_P_tasks(self, task_source, P_num_task, sample_rate, N_way, K_shot, query_size):
@@ -257,3 +301,7 @@ class Dataset:
                 query_set.append(current_query_graphs)
 
         return {"support_set": support_set, "query_set": query_set, "append_count": append_count}
+
+
+
+

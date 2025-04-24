@@ -1,13 +1,13 @@
 ckpt: score_model
 data:
-  batch_size: 64
+  batch_size: 256
   data: ENZYMES
   dir: data/
   init: deg
   max_feat_num: 10
   max_node_num: 125
   test_split: 0.2
-device: cuda:0
+device: cuda:3
 exp_name: '[score_model]_snr_x=0.25_scale_eps_x=1.0'
 sample:
   eps: 0.0001

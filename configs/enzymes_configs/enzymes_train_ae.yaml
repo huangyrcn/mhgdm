@@ -1,6 +1,7 @@
 exp_name: enzymes_ae
+exp_type: train_ae
 data:
-  batch_size: 128
+  batch_size: 1024
   name: ENZYMES
   dir: datasets/
   init: degrees
@@ -9,7 +10,7 @@ data:
   test_split: 0.2 # 对于元训练阶段
   train_class_num: 4
   test_class_num: 2
-device: cuda:5
+device: cuda:3
 model:
   encoder: HGCN
   enc_layers: 3

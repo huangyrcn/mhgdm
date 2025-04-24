@@ -1,7 +1,8 @@
 exp_name: emzymes_score_model
+exp_type: train_score
 ae_path: checkpoints/ENZYMES/enzymes_ae/enzymes_ae_20250422_162325.pth
 data:
-  batch_size: 128
+  batch_size: 256
   name: ENZYMES
   dir: datasets/
   init: degrees
@@ -10,7 +11,7 @@ data:
   test_split: 0.2
   train_class_num: 4
   test_class_num: 2
-device: cuda:9
+device: cuda:3
 model:
   GCN_type: HGAT
   act: LeakyReLU

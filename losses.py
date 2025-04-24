@@ -54,14 +54,15 @@ def get_sde_loss_fn(
     eps=1e-5,
     manifold=None,
     encoder=None, 
-    proto=None
 ):
     # 输出的分数与数据结果相同，需要reduce_op来转为一个数
     reduce_op = (
         torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model_x, model_adj, x, adj,proto=None):
+    def loss_fn(model_x, model_adj, x, adj, labels):
+        # Print the labels for the current batch
+        print(f"Graph Labels: {labels}")
         flags = node_flags(adj)
         if encoder is not None:
             posterior = encoder(x, adj, flags)
