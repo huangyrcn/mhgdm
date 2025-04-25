@@ -1,8 +1,9 @@
 ae_path: checkpoints/ENZYMES/enzymes_ae/enzymes_ae_20250424_142945.pth
+adj: adj_poincare_proto
+x: x_poincare_proto
 GCN_type: HGAT
 act: LeakyReLU
 adim: 32
-adj: ScoreNetworkA_poincare
 aggregation_method: sum
 c: 0.01
 c_final: 4
@@ -26,4 +27,4 @@ num_linears: 2
 sum_transform: true
 use_centroid: false
 use_norm: ln
-x: ScoreNetworkX_poincare
+proto_weight: 0.3

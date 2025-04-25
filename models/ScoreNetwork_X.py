@@ -157,4 +157,159 @@ class ScoreNetworkX_poincare(torch.nn.Module):
         x = x * self.time_scale(torch.cat([temb.repeat(1,x.size(1),1),self.manifold.lambda_x(xt,keepdim=True)],dim=-1))
         x = mask_x(x, flags)
         return x
+class ScoreNetworkX_poincare(torch.nn.Module):
+    def __init__(self, max_feat_num, depth, nhid,manifold,edge_dim,GCN_type,**kwargs):
+        super(ScoreNetworkX_poincare, self).__init__()
+        self.manifold = manifold
+        self.nfeat = max_feat_num
+        self.depth = depth
+        self.nhid = nhid
+        # 根据GCN_type选择层类型（支持欧式和双曲）
+        if GCN_type == 'GCN':
+            layer_type = GCLayer
+        elif GCN_type == 'GAT':
+            layer_type = GATLayer
+        elif GCN_type == 'HGCN':
+            layer_type = HGCLayer
+        elif GCN_type == 'HGAT':
+            layer_type = HGATLayer
+        else:
+            raise AttributeError
+        self.layers = torch.nn.ModuleList()
+        if self.manifold is not None:
+            # manifold列表，支持多层双曲空间特征传递
+            self.manifolds = [self.manifold]*(depth+1)
+            for i in range(self.depth):
+                if i == 0:
+                    self.layers.append(layer_type(self.nfeat, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+                else:
+                    self.layers.append(layer_type(self.nhid, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+        else:
+            for i in range(self.depth):
+                if i == 0:
+                    self.layers.append(layer_type(self.nfeat, self.nhid,edge_dim=edge_dim))
+                else:
+                    self.layers.append(layer_type(self.nhid, self.nhid,edge_dim=edge_dim))
+        self.fdim = self.nfeat + self.depth * self.nhid
+        self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=self.nfeat,
+                            use_bn=False, activate_func=F.elu)
+        # 时间嵌入和缩放，用于扩散模型的时间调制
+        self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2*self.nfeat, output_dim=self.nfeat,
+                            use_bn=False, activate_func=F.elu)
+        self.time_scale = nn.Sequential(
+            nn.Linear(self.nfeat+1, self.nfeat),
+            nn.ReLU(),
+            nn.Linear(self.nfeat, 1)
+        )
+
+    def forward(self, x, adj, flags, t):
+        # 前向传播：双曲空间特征变换+多层HGAT/HGCN+时间调制
+        xt = x.clone()
+        temb = get_timestep_embedding(t, self.nfeat)
+        x = exp_after_transp0(x,self.temb_net(temb),self.manifolds[0])
+        if self.manifold is not None:
+            x_list = [self.manifolds[0].logmap0(x)]
+        else:
+            x_list = [x]
+        for i in range(self.depth):
+            x = self.layers[i]((x, adj))[0]
+            if self.manifold is not None:
+                x_list.append(self.manifolds[i+1].logmap0(x))
+            else:
+                x_list.append(x)
+        xs = torch.cat(x_list, dim=-1) # B x N x (F + num_layers x H)
+        out_shape = (adj.shape[0], adj.shape[1], -1)
+        x = self.final(xs).view(*out_shape)
+        # expmap0/logmap等操作保证输出在切空间
+        x = self.manifold.expmap0(x)
+        x = self.manifold.logmap(xt, x)
+        # 时间缩放，包含conformal factor
+        x = x * self.time_scale(torch.cat([temb.repeat(1,x.size(1),1),self.manifold.lambda_x(xt,keepdim=True)],dim=-1))
+        x = mask_x(x, flags)
+        return x
+
+class ScoreNetworkX_poincare_proto(torch.nn.Module):
+    def __init__(self, max_feat_num, depth, nhid,manifold,edge_dim,GCN_type,**kwargs):
+        super().__init__()
+        self.manifold = manifold
+        self.nfeat = max_feat_num
+        self.depth = depth
+        self.nhid = nhid
+        # 根据GCN_type选择层类型（支持欧式和双曲）
+        if GCN_type == 'GCN':
+            layer_type = GCLayer
+        elif GCN_type == 'GAT':
+            layer_type = GATLayer
+        elif GCN_type == 'HGCN':
+            layer_type = HGCLayer
+        elif GCN_type == 'HGAT':
+            layer_type = HGATLayer
+        else:
+            raise AttributeError
+        self.layers = torch.nn.ModuleList()
+        if self.manifold is not None:
+            # manifold列表，支持多层双曲空间特征传递
+            self.manifolds = [self.manifold]*(depth+1)
+            for i in range(self.depth):
+                if i == 0:
+                    self.layers.append(layer_type(self.nfeat, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+                else:
+                    self.layers.append(layer_type(self.nhid, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+        else:
+            for i in range(self.depth):
+                if i == 0:
+                    self.layers.append(layer_type(self.nfeat, self.nhid,edge_dim=edge_dim))
+                else:
+                    self.layers.append(layer_type(self.nhid, self.nhid,edge_dim=edge_dim))
+        self.fdim = self.nfeat + self.depth * self.nhid
+        self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=self.nfeat,
+                            use_bn=False, activate_func=F.elu)
+        # 时间嵌入和缩放，用于扩散模型的时间调制
+        self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2*self.nfeat, output_dim=self.nfeat,
+                            use_bn=False, activate_func=F.elu)
+        self.time_scale = nn.Sequential(
+            nn.Linear(self.nfeat+1, self.nfeat),
+            nn.ReLU(),
+            nn.Linear(self.nfeat, 1)
+        )
+
+    def forward(self, x, adj, flags, t,protos):
+        # 前向传播：双曲空间特征变换+多层HGAT/HGCN+时间调制
+        xt = x.clone()
+        temb = get_timestep_embedding(t, self.nfeat)
+        x = exp_after_transp0(x,self.temb_net(temb),self.manifolds[0])
+        if self.manifold is not None:
+            x_list = [self.manifolds[0].logmap0(x)]
+        else:
+            x_list = [x]
+        for i in range(self.depth):
+            x = self.layers[i]((x, adj))[0]
+            if self.manifold is not None:
+                x_list.append(self.manifolds[i+1].logmap0(x))
+            else:
+                x_list.append(x)
+        xs = torch.cat(x_list, dim=-1) # B x N x (F + num_layers x H)
+        out_shape = (adj.shape[0], adj.shape[1], -1)
+        x = self.final(xs).view(*out_shape)
+        # expmap0/logmap等操作保证输出在切空间
+        x = self.manifold.expmap0(x)
+        x = self.manifold.logmap(xt, x)
+
+            # 💡 融入原型相似性引导
+        if protos is not None:
+            proto_dist = torch.cdist(xt, protos)       # [B, N, C]
+            proto_sim = -proto_dist                    # 越大越相似
+            proto_context = torch.matmul(
+                torch.softmax(proto_sim, dim=-1), protos
+            )                                          # [B, N, d]
+            proto_diff = self.manifold.logmap0(proto_context)  # 映射到切空间
+            x = x + self.proto_weight * proto_diff     # 加权叠加语义引导
+
+        # 时间缩放，包含conformal factor
+
+        time_input = torch.cat([temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1)
+        x = x * self.time_scale(time_input)
+        x = mask_x(x, flags)
+        
+        return x
     

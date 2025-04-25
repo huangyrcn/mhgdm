@@ -14,11 +14,12 @@ def get_score_fn(sde, model, train=True, continuous=True,protos=None):
 
     if isinstance(sde, VPSDE) or isinstance(sde, subVPSDE):
 
-        def score_fn(x, adj, flags, t,protos=None):
+        def score_fn(x, adj, flags, t, protos=None): # Keep protos here
             # Scale neural network output by standard deviation and flip sign
             if continuous:
                 labels = t * 999
-                score = model_fn(x, adj, flags, labels)
+                # Pass protos to the model_fn call
+                score = model_fn(x, adj, flags, labels, protos=protos)
                 std = sde.marginal_prob(torch.zeros_like(adj), t)[1]
             else:
                 raise NotImplementedError(f"Discrete not supported")
@@ -28,11 +29,12 @@ def get_score_fn(sde, model, train=True, continuous=True,protos=None):
 
     elif isinstance(sde, VESDE):
 
-        def score_fn(x, adj, flags, t,protos=None):
+        def score_fn(x, adj, flags, t, protos=None): # Keep protos here
             if continuous:
                 labels = sde.T - t
                 labels *= sde.N - 1
-                score = model_fn(x, adj, flags, labels)
+                # Pass protos to the model_fn call
+                score = model_fn(x, adj, flags, labels, protos=protos)
             else:
                 raise NotImplementedError(f"Discrete not supported")
 
@@ -60,7 +62,7 @@ def get_sde_loss_fn(
         torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model_x, model_adj, x, adj, labels):
+    def loss_fn(model_x, model_adj, x, adj, labels,protos):
 
         flags = node_flags(adj)
         if encoder is not None:

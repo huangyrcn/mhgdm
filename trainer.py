@@ -8,7 +8,7 @@ import wandb
 from tqdm import  trange
 import numpy as np
 import torch
-
+from utils.protos_utils import compute_protos_from
 from models.HVAE import HVAE
 from sampler import Sampler_mol, Sampler
 from utils.graph_utils import node_flags
@@ -52,7 +52,7 @@ class Trainer(object):
             mode=mode,
         )
 
-        self.ckpt = f"{self.config.exp_name}"+f"_{ts}"
+        self.ckpt = self.config.ckpt =f"{self.config.exp_name}"+f"_{ts}"
         print("\033[91m" + f"{self.ckpt}" + "\033[0m")
 
         # -------- Load data models, optimizers --------
@@ -190,7 +190,6 @@ class Trainer(object):
 
     def train_score(self, ts=None):
         ts = time.strftime("%Y%m%d_%H%M%S")
-        self.config.exp_name
         if self.config.model.ae_path is None:
             Encoder = None
             manifold = get_manifold(self.config.model.manifold, self.config.model.c)
@@ -222,8 +221,9 @@ class Trainer(object):
             mode=mode,
         )
 
+        
+        self.ckpt = self.config.ckpt =f"{self.config.exp_name}"+f"_{ts}"
 
-        self.ckpt = f"{self.config.exp_name}"+f"_{ts}"
         print("\033[91m" + f"{self.ckpt}" + "\033[0m")
 
         # -------- Load data models, optimizers, ema --------
@@ -249,7 +249,12 @@ class Trainer(object):
 
 
         self.loss_fn = load_loss_fn(self.config, manifold=manifold, encoder=Encoder)
+        # region compute protos
+        # 计算元训练集的 protos
+        protos_train = compute_protos_from(Encoder, self.train_loader, self.device)
+        protos_test = compute_protos_from(Encoder, self.test_loader, self.device)
 
+        # end region
         # -------- 轮次--------
         for epoch in trange(
             0, (self.config.train.num_epochs), desc="[Epoch]", position=1, leave=False
@@ -271,7 +276,8 @@ class Trainer(object):
                     train_b, self.device
                 )  # Added labels to unpack the third value
                 # Pass labels to the loss function
-                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj, labels)
+
+                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj, labels,protos_train)
                 if torch.isnan(loss_x):
                     raise ValueError("NaN")
                 self.optimizer_x.zero_grad()
@@ -303,6 +309,8 @@ class Trainer(object):
             # region test
             self.model_x.eval()
             self.model_adj.eval()
+                   
+
             for _, test_b in enumerate(self.test_loader):
 
                 x, adj, labels = load_batch(test_b, self.device)
@@ -316,7 +324,7 @@ class Trainer(object):
                     self.ema_adj.copy_to(self.model_adj.parameters())
 
                     # Now *loss_subject will unpack x, adj, and labels
-                    loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, *loss_subject) 
+                    loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, *loss_subject,protos_test) 
                     self.test_x.append(loss_x.item())
                     self.test_adj.append(loss_adj.item())
 
@@ -368,13 +376,12 @@ class Trainer(object):
                 )
                 # region -------- Sample evaluation --------
                 
-                device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
-                if self.config.data.name == "ENZYMES":
-
-                    eval_dict = Sampler(self.config).sample(independent=False)    
-                eval_dict["epoch"] = epoch + 1
-                wandb.log(eval_dict, commit=True)
-                logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
+                # device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
+                # if self.config.data.name == "ENZYMES":
+                #     eval_dict = Sampler(self.config).sample(independent=False)    
+                # eval_dict["epoch"] = epoch + 1
+                # wandb.log(eval_dict, commit=True)
+                # logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
 
                 # endregion
                 

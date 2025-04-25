@@ -12,7 +12,7 @@ def main(cfg: DictConfig):
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     cfg_dict = ml_collections.ConfigDict(cfg_dict)
     trainer = Trainer(cfg_dict)  # Pass the dictionary
-    trainer.train_score()
+    trainer.trai    n_score()
 
 
 if __name__ == "__main__":

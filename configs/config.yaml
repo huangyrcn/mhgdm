@@ -4,10 +4,10 @@ defaults:
   - data : ENZYMES
   - fsl_task : 10shot
   - model : score
-  - train : score
+  - train : train_score
 
 
-exp_name: "modify_score_model"
+exp_name: "proto_guide_score_model"
 seed: 4
 device: cuda
 
@@ -24,7 +24,7 @@ hydra:
   verbose: false
 
 wandb:
-  no_wandb: true
+  no_wandb: false
   online: true # Set to false for offline logging
   project: MHGDM
   wandb_usr: huangyr

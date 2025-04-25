@@ -45,19 +45,13 @@ if all_nx_graphs:
     print(f"\nFeature Matrix Shape: {feature_matrix.shape}")
     print(f"Adjacency Matrix Shape: {adj_matrix_dense.shape}")
 
-# Check if any graphs were loaded
-if g_list: # Check g_list instead of all_nx_graphs
-    # Get the first graph object
+
+if g_list: 
     first_graph_obj = g_list[0]
-    # Get the networkx graph from the Graph object
     first_nx_graph = first_graph_obj.g
 
-    # Get the adjacency matrix (as a SciPy sparse matrix)
     adj_matrix_sparse = nx.adjacency_matrix(first_nx_graph)
-    # Convert to dense numpy array for printing if needed
     adj_matrix_dense = adj_matrix_sparse.todense()
-
-    # Get the feature matrix (already a torch tensor)
     feature_matrix = first_graph_obj.node_features
 
     print("First Graph:")

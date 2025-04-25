@@ -6,8 +6,8 @@ lr: 0.01
 lr_decay: 0.999
 lr_schedule: true
 num_epochs: 5000
-print_interval: 100
+print_interval: 5
 reduce_mean: true
-save_interval: 500
+save_interval: 10
 weight_decay: 0.0001
 

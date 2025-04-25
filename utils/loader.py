@@ -7,8 +7,8 @@ import subprocess
 
 # import synthetic.model
 from models.HVAE import HVAE
-from models.ScoreNetwork_A import ScoreNetworkA_poincare, HScoreNetworkA
-from models.ScoreNetwork_X import ScoreNetworkX_poincare
+from models.ScoreNetwork_A import ScoreNetworkA_poincare, HScoreNetworkA,ScoreNetworkA_poincare_proto
+from models.ScoreNetwork_X import ScoreNetworkX_poincare,ScoreNetworkX_poincare_proto
 from utils.sde_lib import VPSDE, VESDE, subVPSDE
 
 from losses import get_sde_loss_fn
@@ -44,7 +44,11 @@ def load_model(params):
     # 以下为模型自己的实现
     if model_type == "ScoreNetworkX_poincare":
         model = ScoreNetworkX_poincare(**params_)
+    elif model_type == "x_poincare_proto": # Added condition for x_poincare_proto
+        model = ScoreNetworkX_poincare_proto(**params_)
     elif model_type == "ScoreNetworkA_poincare":
+        model = ScoreNetworkA_poincare_proto(**params_)
+    elif model_type == "adj_poincare_proto": # Added condition for adj_poincare_proto
         model = ScoreNetworkA_poincare(**params_)
     elif model_type == "HScoreNetworkA":
         model = HScoreNetworkA(**params_)
@@ -202,6 +206,17 @@ def load_model_params(config, manifold=None):
             "edge_dim": config_m.edge_dim,
             "GCN_type": config_m.GCN_type,
         }
+    elif "poincare_proto" in config_m.x:
+        params_x = {
+            "model_type": config_m.x,
+            "max_feat_num": max_feat_num,
+            "depth": config_m.depth,
+            "nhid": config_m.nhid,
+            "manifold": manifold,
+            "edge_dim": config_m.edge_dim,
+            "GCN_type": config_m.GCN_type,
+            "proto_weight": config_m.proto_weight,
+        }
     else:
         params_x = {
             "model_type": config_m.x,
@@ -225,6 +240,23 @@ def load_model_params(config, manifold=None):
             "num_heads": config_m.num_heads,
             "conv": config_m.conv,
             "manifold": manifold,
+        }
+    elif "poincare_proto" in config_m.adj:
+        params_adj = {
+            "model_type": config_m.adj,
+            "max_feat_num": max_feat_num,
+            "max_node_num": config.data.max_node_num,
+            "nhid": config_m.nhid,
+            "num_layers": config_m.num_layers,
+            "num_linears": config_m.num_linears,
+            "c_init": config_m.c_init,
+            "c_hid": config_m.c_hid,
+            "c_final": config_m.c_final,
+            "adim": config_m.adim,
+            "num_heads": config_m.num_heads,
+            "conv": config_m.conv,
+            "manifold": manifold,
+            "proto_weight": config_m.proto_weight,
         }
     elif "HScoreNetworkA" == config_m.adj:
         params_adj = {
@@ -264,7 +296,7 @@ def load_ckpt(config, device, ts=None, return_ckpt=False):
     device_id = f"cuda:{device[0]}" if isinstance(device, list) else device
     if ts is not None:
         config.ckpt = ts
-    path = f"./checkpoints/{config.data.name}/{config.ckpt}/{config.saved_name}.pth"
+    path = (f"./checkpoints/{config.data.name}/{config.exp_name}/{ckpt}.pth")
     ckpt = torch.load(path, map_location=device_id)
     print(f"{path} loaded")
     ckpt_dict = {
