@@ -1,6 +1,8 @@
 import os
 import sys, pathlib
 
+
+
 sys.path.append(str(pathlib.Path(__file__).parent.parent.resolve()))
 import pickle
 import networkx as nx
@@ -16,11 +18,15 @@ from torch.utils.data import Dataset, DataLoader
 from utils.graph_utils import node_flags
 
 
-def load_data(config):
-
+def load_data(config,get_graph_list=False):
+            
     dataset = MyDataset(config)
-    # 返回 MyDataset 的训练和测试数据加载器
-    return dataset.get_loaders()
+    if get_graph_list:
+        return dataset.train_graphs, dataset.test_graphs
+    else:
+
+        return dataset.get_loaders()
+
 
 
 class Graph(object):
@@ -32,13 +38,6 @@ class Graph(object):
         self.node_features = 0
         self.edge_mat = 0
         self.max_neighbor = 0
-
-
-import os
-import torch
-import networkx as nx
-import numpy as np
-import pickle
 
 
 def load_from_file(config, degree_as_tag):
@@ -165,15 +164,10 @@ def load_from_file(config, degree_as_tag):
 
     return g_list, label_dict, tagset, all_nx_graphs, max_node_num, max_feat_num
 
-
 class MyDataset:
     def __init__(self, config):
         self.dataset_name = config.data.name
         self.config = config
-        self.train_graphs = []
-        self.test_graphs = []
-        self.train_nx_graphs = []
-        self.test_nx_graphs = []
 
         (
             all_graphs,
@@ -184,82 +178,80 @@ class MyDataset:
             self.config.data.max_feat_num,
         ) = load_from_file(config=self.config, degree_as_tag=True)
 
-        # Calculate and store max_node_num and max_feat_num
-        self.max_node_num = max(len(g.nodes) for g in all_nx_graphs) if all_nx_graphs else 0
-        self.tagset = tagset  # Store tagset
-        self.max_feat_num = len(
-            self.tagset
-        )  # Feature dimension is based on the number of unique tags (degrees)
+        self.max_node_num = self.config.data.max_node_num
+        self.max_feat_num = self.config.data.max_feat_num
+        self.tagset = tagset
 
-        with open("./datasets/{}/train_test_classes.json".format(config.data.name), "r") as f:
+        with open(f"./datasets/{config.data.name}/train_test_classes.json", "r") as f:
             all_class_splits = json.load(f)
             self.train_classes = all_class_splits["train"]
             self.test_classes = all_class_splits["test"]
 
-        train_classes_mapping = {}
-        for cl in self.train_classes:
-            train_classes_mapping[cl] = len(train_classes_mapping)
-        self.train_classes_num = len(train_classes_mapping)
+        train_classes_mapping = {cl: idx for idx, cl in enumerate(self.train_classes)}
+        test_classes_mapping = {cl: idx for idx, cl in enumerate(self.test_classes)}
 
-        test_classes_mapping = {}
-        for cl in self.test_classes:
-            test_classes_mapping[cl] = len(test_classes_mapping)
+        self.train_classes_num = len(train_classes_mapping)
         self.test_classes_num = len(test_classes_mapping)
+
+        self.train_graphs = []
+        self.test_graphs = []
+        self.train_labels = []
+        test_labels = []
 
         for i in range(len(all_graphs)):
             original_label = all_graphs[i].label
             if original_label in self.train_classes:
                 all_graphs[i].label = train_classes_mapping[int(original_label)]
-                self.train_graphs.append(all_graphs[i])
-                self.train_nx_graphs.append(all_nx_graphs[i])
-                all_nx_graphs[i].graph["label"] = all_graphs[i].label
-
-            if original_label in self.test_classes:
+                self.train_graphs.append(all_nx_graphs[i])
+                self.train_labels.append(all_graphs[i].label)
+            elif original_label in self.test_classes:
                 all_graphs[i].label = test_classes_mapping[int(original_label)]
-                self.test_graphs.append(all_graphs[i])
-                self.test_nx_graphs.append(all_nx_graphs[i])
-                all_nx_graphs[i].graph["label"] = all_graphs[i].label
+                self.test_graphs.append(all_nx_graphs[i])
+                test_labels.append(all_graphs[i].label)
 
-        np.random.shuffle(self.train_graphs)
+        # 转 tensor
+        self.train_adjs, self.train_x = graphs_to_tensor(self.train_graphs, self.max_node_num, self.max_feat_num)
+        self.test_adjs, self.test_x = graphs_to_tensor(self.test_graphs, self.max_node_num, self.max_feat_num)
+        self.train_labels = torch.LongTensor(train_labels)
+        self.test_labels = torch.LongTensor(test_labels)
+
+        # 组织成 task 列表 (Graph对象用于sample，后续也可以升级为tensor版)
         self.train_tasks = defaultdict(list)
-        for graph in self.train_graphs:
-            self.train_tasks[graph.label].append(graph)
+        for graph, label in zip(all_graphs, train_labels):
+            self.train_tasks[label].append(graph)
 
-        np.random.shuffle(self.test_graphs)
         self.test_tasks = defaultdict(list)
-        for graph in self.test_graphs:
-            self.test_tasks[graph.label].append(graph)
+        for graph, label in zip(all_graphs, test_labels):
+            self.test_tasks[label].append(graph)
 
+        # 测试用的全部 test graph (用于few-shot query pool)
         self.total_test_g_list = []
         for index in range(self.test_classes_num):
-            query_pool_for_class = list(self.test_tasks[index])[self.config.fsl_task.K_shot :]
+            query_pool_for_class = list(self.test_tasks[index])[self.config.fsl_task.K_shot:]
             self.total_test_g_list.extend(query_pool_for_class)
 
         from numpy.random import RandomState
-
         rd = RandomState(0)
         rd.shuffle(self.total_test_g_list)
 
     def get_loaders(self):
-        def make_loader(nx_graphs):
-            adjs_tensor = graphs_to_tensor(nx_graphs, self.config.data.max_node_num)
-            x_tensor = init_features(
-                self.config.data.init, adjs_tensor
-            )
+        train_dataset = TensorDataset(self.train_x, self.train_adjs, self.train_labels)
+        test_dataset = TensorDataset(self.test_x, self.test_adjs, self.test_labels)
 
-            labels_tensor = torch.LongTensor([nx_g.graph["label"] for nx_g in nx_graphs])
-            dataset = TensorDataset(x_tensor, adjs_tensor, labels_tensor)
-            loader = DataLoader(
-                dataset,
-                batch_size=self.config.data.batch_size,
-                shuffle=True,
-                num_workers=8,  # Or a higher value based on your CPU cores
-                pin_memory=True,
-            )
-            return loader
-
-        train_loader = make_loader(self.train_nx_graphs)
-        test_loader = make_loader(self.test_nx_graphs)
+        train_loader = DataLoader(
+            dataset=train_dataset,
+            batch_size=self.config.data.batch_size,
+            shuffle=True,
+            num_workers=8,
+            pin_memory=True,
+        )
+        test_loader = DataLoader(
+            dataset=test_dataset,
+            batch_size=self.config.data.batch_size,
+            shuffle=False,
+            num_workers=8,
+            pin_memory=True,
+        )
         return train_loader, test_loader
 
     def sample_P_tasks(self, task_source, P_num_task, sample_rate, N_way, K_shot, query_size):
@@ -312,7 +304,5 @@ class MyDataset:
                         break
                     append_count += 1
                 query_set.append(current_query_graphs)
-
         return {"support_set": support_set, "query_set": query_set, "append_count": append_count}
-    
 

@@ -24,7 +24,7 @@ class HVAE(nn.Module):
 
     def __init__(self, config):
         super(HVAE, self).__init__()
-        self.device = torch.device(config.device)
+        self.device = config.device
         self.encoder = getattr(Encoders, config.model.encoder)(config)
 
         if config.model.manifold != "Euclidean":

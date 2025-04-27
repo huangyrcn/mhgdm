@@ -16,7 +16,6 @@ from utils.loader import (
     load_seed,
     load_device,
     load_data,
-    load_model_params,
     load_model_optimizer,
     load_ema,
     load_loss_fn,
@@ -29,16 +28,16 @@ from utils.manifolds_utils import get_manifold
 class Trainer(object):
     def __init__(self, config):
         super(Trainer, self).__init__()
-
         self.config = config
         self.log_folder_name, self.log_dir, self.ckpt_dir = set_log(self.config)
         self.seed = load_seed(self.config.seed)
         self.device = load_device(self.config)
+        self.run_name =self.config.run_name
 
 
 
     def train_ae(self):
-        ts = time.strftime("%Y%m%d_%H%M%S")
+        ts = self.config.timestamp
 
         mode = "disabled"
         if not self.config.wandb.no_wandb:
@@ -46,25 +45,24 @@ class Trainer(object):
         wandb.init(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
-            name=self.config.exp_name + f"_{ts}",
+            name=self.config.run_name,
             config=self.config.to_dict(),
             settings=wandb.Settings(_disable_stats=True),
             mode=mode,
         )
 
-        self.ckpt = self.config.ckpt =f"{self.config.exp_name}"+f"_{ts}"
-        print("\033[91m" + f"{self.ckpt}" + "\033[0m")
+        print("\033[91m" + f"{self.run_name}" + "\033[0m")
 
         # -------- Load data models, optimizers --------
         self.train_loader, self.test_loader = load_data(self.config)
         self.model, self.optimizer, self.scheduler = load_model_optimizer(
-            self.config.to_dict(), self.config, self.device
+            self.config, self.config.model.to_dict()
         )
         total = sum([param.nelement() for param in self.model.parameters()])
         print("Number of parameter: %.4fM" % (total / 1e6))
 
-        logger = Logger(str(os.path.join(self.log_dir, f"{self.ckpt}.log")), mode="a")
-        logger.log(f"{self.ckpt}", verbose=False)
+        logger = Logger(str(os.path.join(self.log_dir, f"{self.run_name}.log")), mode="a")
+        logger.log(f"{self.run_name}", verbose=False)
         start_log(logger, self.config)
         train_log(logger, self.config)
 
@@ -140,25 +138,34 @@ class Trainer(object):
             # )
 
             # -------- Save checkpoints --------
-            if (
-                epoch % self.config.train.save_interval == self.config.train.save_interval - 1
-                and best_mean_test_loss > mean_total_test_loss
-            ):
+            save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+            os.makedirs(save_dir, exist_ok=True)
 
+            # 构建保存信息
+            save_dict = {
+                "epoch": epoch,
+                "model_config": self.config.to_dict(),
+                "ae_state_dict": self.model.state_dict(),
+                "best_loss": best_mean_test_loss,
+                "current_loss": mean_total_test_loss
+            }
+
+            # 按固定间隔保存epoch检查点
+            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
+                os.makedirs(os.path.dirname(f"{save_dir}/epoch_{epoch}.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/epoch_{epoch}.pth")
+
+            # 判断并保存最佳模型
+            if mean_total_test_loss < best_mean_test_loss:
                 best_mean_test_loss = mean_total_test_loss
-                # Construct the save path
-                save_path = (
-                    f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.ckpt}.pth"
-                )
-                # Ensure the directory exists before saving
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                torch.save(
-                    {
-                        "model_config": self.config.to_dict(),
-                        "ae_state_dict": self.model.state_dict(),
-                    },
-                    save_path,  # Use the constructed path
-                )
+                save_dict["best_loss"] = best_mean_test_loss
+                os.makedirs(os.path.dirname(f"{save_dir}/best.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/best.pth")
+
+            # 保存最终模型
+            if epoch == self.config.train.num_epochs - 1:
+                os.makedirs(os.path.dirname(f"{save_dir}/final.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/final.pth")
 
             wandb.log(
                 {
@@ -177,24 +184,24 @@ class Trainer(object):
                     f"{epoch + 1:03d} | {time.time() - t_start:.2f}s | "
                     f"total train loss: {mean_total_train_loss:.3e} | "
                     f"total test loss: {mean_total_test_loss:.3e} | "
-                    f"test rec loss:{mean_test_rec_loss:.3e} | "
-                    f"test kl loss:{mean_test_kl_loss:.3e} | "
-                    f"test edge loss:{mean_test_edge_loss:.3e} | "
-                    f"test proto loss:{mean_test_proto_loss:.3e} |",  # 添加到logger日志
+                    f"test rec loss: {mean_test_rec_loss:.3e} | "
+                    f"test kl loss: {mean_test_kl_loss:.3e} | "
+                    f"test edge loss: {mean_test_edge_loss:.3e} | "
+                    f"test proto loss: {mean_test_proto_loss:.3e} |",  # 添加到logger日志
                     verbose=False,
                 )
 
         print(" ")
 
-        return self.ckpt
+        return self.run_name
 
     def train_score(self, ts=None):
-        ts = time.strftime("%Y%m%d_%H%M%S")
+        # ts = self.config.timestamp
         if self.config.model.ae_path is None:
             Encoder = None
-            manifold = get_manifold(self.config.model.manifold, self.config.model.c)
+            self.manifold = get_manifold(self.config.model.manifold, self.config.model.c)
         else:
-            checkpoint = torch.load(self.config.model.ae_path, map_location=self.config.device)
+            checkpoint = torch.load(self.config.model.ae_path, map_location=self.config.device,weights_only=False)
             AE_state_dict = checkpoint["ae_state_dict"]
             AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
             AE_config.model.dropout = 0
@@ -204,9 +211,8 @@ class Trainer(object):
                 if "encoder" in name or "decoder" in name:
                     param.requires_grad = False
             Encoder = ae.encoder.to(self.device)
-            manifold = Encoder.manifold
+            self.manifold = Encoder.manifold
 
-        self.params_x, self.params_adj = load_model_params(self.config, manifold=manifold)
 
         # -------- wandb --------
         mode = "disabled"
@@ -215,40 +221,42 @@ class Trainer(object):
         wandb.init(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
-            name=self.config.exp_name + f"_{ts}",
+            name=self.config.run_name,
             config=self.config.to_dict(),
             settings=wandb.Settings(_disable_stats=True),
             mode=mode,
         )
 
         
-        self.ckpt = self.config.ckpt =f"{self.config.exp_name}"+f"_{ts}"
-
-        print("\033[91m" + f"{self.ckpt}" + "\033[0m")
+        print("\033[91m" + f"{self.run_name}" + "\033[0m")
 
         # -------- Load data models, optimizers, ema --------
         self.train_loader, self.test_loader= load_data(self.config)
+        self.params_x = self.config.model.x.to_dict()
+        self.params_x['manifold'] = self.manifold
+        self.params_adj =self.config.model.adj.to_dict()
+        self.params_adj['manifold'] = self.manifold
         self.model_x, self.optimizer_x, self.scheduler_x = load_model_optimizer(
-            self.params_x, self.config, self.device
+            self.config,self.params_x, 
         )
         self.model_adj, self.optimizer_adj, self.scheduler_adj = load_model_optimizer(
-            self.params_adj, self.config, self.device
-        )
+            self.config,self.params_adj)
         total = sum(
             [param.nelement() for param in self.model_x.parameters()]
             + [param.nelement() for param in self.model_adj.parameters()]
         )
         print("Number of parameter: %.2fM" % (total / 1e6))
+
         self.ema_x = load_ema(self.model_x, decay=self.config.train.ema)
         self.ema_adj = load_ema(self.model_adj, decay=self.config.train.ema)
 
-        logger = Logger(str(os.path.join(self.log_dir, f"{self.ckpt}.log")), mode="a")
-        logger.log(f"{self.ckpt}", verbose=False)
+        logger = Logger(str(os.path.join(self.log_dir, f"{self.run_name}.log")), mode="a")
+        logger.log(f"{self.run_name}", verbose=False)
         start_log(logger, self.config)
         train_log(logger, self.config)
 
 
-        self.loss_fn = load_loss_fn(self.config, manifold=manifold, encoder=Encoder)
+        self.loss_fn = load_loss_fn(self.config, self.manifold, encoder=Encoder)
         # region compute protos
         # 计算元训练集的 protos
         protos_train = compute_protos_from(Encoder, self.train_loader, self.device)
@@ -256,9 +264,8 @@ class Trainer(object):
 
         # end region
         # -------- 轮次--------
-        for epoch in trange(
-            0, (self.config.train.num_epochs), desc="[Epoch]", position=1, leave=False
-        ):
+        best_mean_test_loss = 1e10  # Initialize best mean test loss
+        for epoch in trange(            0, (self.config.train.num_epochs), desc="[Epoch]", position=1, leave=False ):
 
             self.train_x = []
             self.train_adj = []
@@ -274,9 +281,8 @@ class Trainer(object):
             for _, train_b in enumerate(self.train_loader):
                 x, adj, labels= load_batch(
                     train_b, self.device
-                )  # Added labels to unpack the third value
-                # Pass labels to the loss function
-
+                ) 
+                
                 loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj, labels,protos_train)
                 if torch.isnan(loss_x):
                     raise ValueError("NaN")
@@ -335,6 +341,7 @@ class Trainer(object):
             mean_train_adj = np.mean(self.train_adj)
             mean_test_x = np.mean(self.test_x)
             mean_test_adj = np.mean(self.test_adj)
+            total_test_loss = mean_test_x + mean_test_adj # Calculate total test loss
             # endregion
             
             # region -------- Log losses --------
@@ -358,33 +365,53 @@ class Trainer(object):
             # endregion
             
             # region -------- Save checkpoints --------
-            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
-                save_path = (
-                    f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.ckpt}.pth"
-                )
-                torch.save(
-                    {
-                        "model_config": self.config,
-                        "params_x": self.params_x,
-                        "params_adj": self.params_adj,
-                        "x_state_dict": self.model_x.state_dict(),
-                        "adj_state_dict": self.model_adj.state_dict(),
-                        "ema_x": self.ema_x.state_dict(),
-                        "ema_adj": self.ema_adj.state_dict(),
-                    },
-                  save_path,  # Use the constructed path
-                )
-                # region -------- Sample evaluation --------
-                
-                # device, ckpt, snr_x, scale_eps_x = self.device, self.ckpt, 0.1, 1
-                # if self.config.data.name == "ENZYMES":
-                #     eval_dict = Sampler(self.config).sample(independent=False)    
-                # eval_dict["epoch"] = epoch + 1
-                # wandb.log(eval_dict, commit=True)
-                # logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
+            save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+            os.makedirs(save_dir, exist_ok=True)
 
-                # endregion
-                
+            # 构建保存信息
+            save_dict = {
+                "epoch": epoch,
+                "model_config": self.config,
+                "params_x": self.params_x,
+                "params_adj": self.params_adj,
+                "x_state_dict": self.model_x.state_dict(),
+                "adj_state_dict": self.model_adj.state_dict(),
+                "ema_x": self.ema_x.state_dict(),
+                "ema_adj": self.ema_adj.state_dict(),
+                "best_loss": best_mean_test_loss,
+                "current_loss": total_test_loss
+            }
+
+            # 按固定间隔保存epoch检查点
+            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
+                os.makedirs(os.path.dirname(f"{save_dir}/epoch_{epoch}.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/epoch_{epoch}.pth")
+
+            # 判断并保存最佳模型
+            if total_test_loss < best_mean_test_loss:
+                best_mean_test_loss = total_test_loss
+                save_dict["best_loss"] = best_mean_test_loss
+                os.makedirs(os.path.dirname(f"{save_dir}/best.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/best.pth")
+
+            # 保存最终模型
+            if epoch == self.config.train.num_epochs - 1:
+                os.makedirs(os.path.dirname(f"{save_dir}/final.pth"), exist_ok=True)
+                torch.save(save_dict, f"{save_dir}/final.pth")
+            # endregion
+
+            # region -------- Sample evaluation --------
+            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
+                self.config.sampler.snr_x = "0.1" 
+                self.config.sampler.scale_eps_x = "1.0" # Corrected typo and type
+                self.config.sampler.ckp_path = f"{save_dir}/epoch_{epoch}.pth"
+                if self.config.data.name == "ENZYMES":
+                    eval_dict = Sampler(self.config).sample(independent=False)    
+                eval_dict["epoch"] = epoch + 1
+                wandb.log(eval_dict, commit=True)
+                logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
+            # endregion
+            
             # endreigon
             # region -------- Print losses --------
             # if epoch % self.config.train.print_interval == self.config.train.print_interval - 1:
@@ -395,7 +422,7 @@ class Trainer(object):
             #endregion
         
         print(" ")
-        return self.ckpt
+        return self.run_name
 
     def train_fsl(self):#元测试模型
         # 从dataset中采样元测试任务

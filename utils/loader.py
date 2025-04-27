@@ -4,11 +4,17 @@ import torch
 import random
 import numpy as np
 import subprocess
+import yaml
+import os
 
 # import synthetic.model
 from models.HVAE import HVAE
-from models.ScoreNetwork_A import ScoreNetworkA_poincare, HScoreNetworkA,ScoreNetworkA_poincare_proto
-from models.ScoreNetwork_X import ScoreNetworkX_poincare,ScoreNetworkX_poincare_proto
+from models.ScoreNetwork_A import (
+    ScoreNetworkA_poincare,
+    HScoreNetworkA,
+    ScoreNetworkA_poincare_proto,
+)
+from models.ScoreNetwork_X import ScoreNetworkX_poincare, ScoreNetworkX_poincare_proto
 from utils.sde_lib import VPSDE, VESDE, subVPSDE
 
 from losses import get_sde_loss_fn
@@ -33,35 +39,85 @@ def load_seed(seed):
 
     return seed
 
+
+import torch
+import subprocess
+import torch
+import subprocess
+
+
 def load_device(config):
-    device = torch.device(config.device)
-    return device
+    def get_gpu_memory():
+        try:
+            output = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                encoding="utf-8",
+            )
+            return [int(x) for x in output.strip().split("\n")]
+        except Exception as e:
+            print(f"Error querying GPU: {e}")
+            return None
+
+    if config.device == "auto":
+        memory_used = get_gpu_memory()
+        if memory_used is None or not torch.cuda.is_available():
+            print("使用 CPU。")
+            config.device = "cpu"
+            return torch.device("cpu")
+
+        device_count = getattr(config, "device_count", 1)
+        gpu_indices = sorted(range(len(memory_used)), key=lambda i: memory_used[i])[:device_count]
+
+        if device_count == 1:
+            selected = gpu_indices[0]
+            config.device = f"cuda:{selected}"  # 这里更新 config
+            torch.cuda.set_device(selected)
+            print(f"自动选择GPU: cuda:{selected}")
+            return torch.device(config.device)
+        else:
+            config.device = ",".join(
+                [f"cuda:{i}" for i in gpu_indices]
+            )  # 多张的话你可以看情况用 DataParallel
+            for idx in gpu_indices:
+                print(f"使用GPU: cuda:{idx}")
+            return [torch.device(f"cuda:{idx}") for idx in gpu_indices]
+
+    else:
+        device = torch.device(config.device)
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
+        print(f"使用指定设备: {config.device}")
+        return device
 
 
-def load_model(params):
-    params_ = params.copy()
-    model_type = params_.pop("model_type", None)
-    # 以下为模型自己的实现
+def load_model(config, params):
+    """
+    Load model using current configuration structure
+    """
+    model_type = params["model_type"]
+    # 根据模型类型选择配置
     if model_type == "ScoreNetworkX_poincare":
-        model = ScoreNetworkX_poincare(**params_)
-    elif model_type == "x_poincare_proto": # Added condition for x_poincare_proto
-        model = ScoreNetworkX_poincare_proto(**params_)
+        model = ScoreNetworkX_poincare(**params)
+    elif model_type == "x_poincare_proto":
+        model = ScoreNetworkX_poincare_proto(**params)
     elif model_type == "ScoreNetworkA_poincare":
-        model = ScoreNetworkA_poincare_proto(**params_)
-    elif model_type == "adj_poincare_proto": # Added condition for adj_poincare_proto
-        model = ScoreNetworkA_poincare(**params_)
+        model = ScoreNetworkA_poincare(**params)
+    elif model_type == "adj_poincare_proto":
+        model = ScoreNetworkA_poincare_proto(**params)
     elif model_type == "HScoreNetworkA":
-        model = HScoreNetworkA(**params_)
+        model = HScoreNetworkA(**params)
     elif model_type == "ae":
-        model = HVAE(ml_collections.ConfigDict(params))
+        model = HVAE(config)  # HVAE 需要完整的 config
     else:
         raise ValueError(f"Model Name <{model_type}> is Unknown")
+
     return model
 
 
-def load_model_optimizer(params, config, device):
+def load_model_optimizer(config, params):
     config_train = config.train
-    model = load_model(params)
+    device = config.device
+    model = load_model(config, params)
     if isinstance(device, list):
         if len(device) > 1:
             model = torch.nn.DataParallel(model, device_ids=device)
@@ -103,8 +159,8 @@ def load_batch(batch, device):
 
     x_b = batch[0].to(device_id)
     adj_b = batch[1].to(device_id)
-    labels_b = batch[2].to(device_id)  
-    return x_b, adj_b, labels_b  
+    labels_b = batch[2].to(device_id)
+    return x_b, adj_b, labels_b
 
 
 def load_sde(config_sde, manifold=None):
@@ -178,126 +234,124 @@ def load_sampling_fn(config_train, config_module, config_sample, device, manifol
     return sampling_fn
 
 
-def load_model_params(config, manifold=None):
-    config_m = config.model
-    max_feat_num = config.data.max_feat_num
+# def load_model_params(config, manifold=None):
+#     config_m = config.model
+#     max_feat_num = config.data.max_feat_num
 
-    if "GMH" in config_m.x:
-        params_x = {
-            "model_type": config_m.x,
-            "max_feat_num": max_feat_num,
-            "depth": config_m.depth,
-            "nhid": config_m.nhid,
-            "num_linears": config_m.num_linears,
-            "c_init": config_m.c_init,
-            "c_hid": config_m.c_hid,
-            "c_final": config_m.c_final,
-            "adim": config_m.adim,
-            "num_heads": config_m.num_heads,
-            "conv": config_m.conv,
-        }
-    elif "poincare" in config_m.x:
-        params_x = {
-            "model_type": config_m.x,
-            "max_feat_num": max_feat_num,
-            "depth": config_m.depth,
-            "nhid": config_m.nhid,
-            "manifold": manifold,
-            "edge_dim": config_m.edge_dim,
-            "GCN_type": config_m.GCN_type,
-        }
-    elif "poincare_proto" in config_m.x:
-        params_x = {
-            "model_type": config_m.x,
-            "max_feat_num": max_feat_num,
-            "depth": config_m.depth,
-            "nhid": config_m.nhid,
-            "manifold": manifold,
-            "edge_dim": config_m.edge_dim,
-            "GCN_type": config_m.GCN_type,
-            "proto_weight": config_m.proto_weight,
-        }
-    else:
-        params_x = {
-            "model_type": config_m.x,
-            "max_feat_num": max_feat_num,
-            "depth": config_m.depth,
-            "nhid": config_m.nhid,
-        }
+#     if "GMH" in config_m.x:
+#         params_x = {
+#             "model_type": config_m.x,
+#             "max_feat_num": max_feat_num,
+#             "depth": config_m.depth,
+#             "nhid": config_m.nhid,
+#             "num_linears": config_m.num_linears,
+#             "c_init": config_m.c_init,
+#             "c_hid": config_m.c_hid,
+#             "c_final": config_m.c_final,
+#             "adim": config_m.adim,
+#             "num_heads": config_m.num_heads,
+#             "conv": config_m.conv,
+#         }
+#     elif "poincare" in config_m.x:
+#         params_x = {
+#             "model_type": config_m.x,
+#             "max_feat_num": max_feat_num,
+#             "depth": config_m.depth,
+#             "nhid": config_m.nhid,
+#             "manifold": manifold,
+#             "edge_dim": config_m.edge_dim,
+#             "GCN_type": config_m.GCN_type,
+#         }
+#     elif "poincare_proto" in config_m.x:
+#         params_x = {
+#             "model_type": config_m.x,
+#             "max_feat_num": max_feat_num,
+#             "depth": config_m.depth,
+#             "nhid": config_m.nhid,
+#             "manifold": manifold,
+#             "edge_dim": config_m.edge_dim,
+#             "GCN_type": config_m.GCN_type,
+#             "proto_weight": config_m.proto_weight,
+#         }
+#     else:
+#         params_x = {
+#             "model_type": config_m.x,
+#             "max_feat_num": max_feat_num,
+#             "depth": config_m.depth,
+#             "nhid": config_m.nhid,
+#         }
 
-    if "poincare" in config_m.adj:
-        params_adj = {
-            "model_type": config_m.adj,
-            "max_feat_num": max_feat_num,
-            "max_node_num": config.data.max_node_num,
-            "nhid": config_m.nhid,
-            "num_layers": config_m.num_layers,
-            "num_linears": config_m.num_linears,
-            "c_init": config_m.c_init,
-            "c_hid": config_m.c_hid,
-            "c_final": config_m.c_final,
-            "adim": config_m.adim,
-            "num_heads": config_m.num_heads,
-            "conv": config_m.conv,
-            "manifold": manifold,
-        }
-    elif "poincare_proto" in config_m.adj:
-        params_adj = {
-            "model_type": config_m.adj,
-            "max_feat_num": max_feat_num,
-            "max_node_num": config.data.max_node_num,
-            "nhid": config_m.nhid,
-            "num_layers": config_m.num_layers,
-            "num_linears": config_m.num_linears,
-            "c_init": config_m.c_init,
-            "c_hid": config_m.c_hid,
-            "c_final": config_m.c_final,
-            "adim": config_m.adim,
-            "num_heads": config_m.num_heads,
-            "conv": config_m.conv,
-            "manifold": manifold,
-            "proto_weight": config_m.proto_weight,
-        }
-    elif "HScoreNetworkA" == config_m.adj:
-        params_adj = {
-            "model_type": config_m.adj,
-            "max_feat_num": max_feat_num,
-            "max_node_num": config.data.max_node_num,
-            "nhid": config_m.nhid,
-            "num_layers": config_m.num_layers,
-            "num_linears": config_m.num_linears,
-            "c_init": config_m.c_init,
-            "c_hid": config_m.c_hid,
-            "c_final": config_m.c_final,
-            "adim": config_m.adim,
-            "num_heads": config_m.num_heads,
-            "conv": config_m.conv,
-            "manifold": manifold,
-        }
-    else:
-        params_adj = {
-            "model_type": config_m.adj,
-            "max_feat_num": max_feat_num,
-            "max_node_num": config.data.max_node_num,
-            "nhid": config_m.nhid,
-            "num_layers": config_m.num_layers,
-            "num_linears": config_m.num_linears,
-            "c_init": config_m.c_init,
-            "c_hid": config_m.c_hid,
-            "c_final": config_m.c_final,
-            "adim": config_m.adim,
-            "num_heads": config_m.num_heads,
-            "conv": config_m.conv,
-        }
-    return params_x, params_adj
+#     if "poincare" in config_m.adj:
+#         params_adj = {
+#             "model_type": config_m.adj,
+#             "max_feat_num": max_feat_num,
+#             "max_node_num": config.data.max_node_num,
+#             "nhid": config_m.nhid,
+#             "num_layers": config_m.num_layers,
+#             "num_linears": config_m.num_linears,
+#             "c_init": config_m.c_init,
+#             "c_hid": config_m.c_hid,
+#             "c_final": config_m.c_final,
+#             "adim": config_m.adim,
+#             "num_heads": config_m.num_heads,
+#             "conv": config_m.conv,
+#             "manifold": manifold,
+#         }
+#     elif "poincare_proto" in config_m.adj:
+#         params_adj = {
+#             "model_type": config_m.adj,
+#             "max_feat_num": max_feat_num,
+#             "max_node_num": config.data.max_node_num,
+#             "nhid": config_m.nhid,
+#             "num_layers": config_m.num_layers,
+#             "num_linears": config_m.num_linears,
+#             "c_init": config_m.c_init,
+#             "c_hid": config_m.c_hid,
+#             "c_final": config_m.c_final,
+#             "adim": config_m.adim,
+#             "num_heads": config_m.num_heads,
+#             "conv": config_m.conv,
+#             "manifold": manifold,
+#             "proto_weight": config_m.proto_weight,
+#         }
+#     elif "HScoreNetworkA" == config_m.adj:
+#         params_adj = {
+#             "model_type": config_m.adj,
+#             "max_feat_num": max_feat_num,
+#             "max_node_num": config.data.max_node_num,
+#             "nhid": config_m.nhid,
+#             "num_layers": config_m.num_layers,
+#             "num_linears": config_m.num_linears,
+#             "c_init": config_m.c_init,
+#             "c_hid": config_m.c_hid,
+#             "c_final": config_m.c_final,
+#             "adim": config_m.adim,
+#             "num_heads": config_m.num_heads,
+#             "conv": config_m.conv,
+#             "manifold": manifold,
+#         }
+#     else:
+#         params_adj = {
+#             "model_type": config_m.adj,
+#             "max_feat_num": max_feat_num,
+#             "max_node_num": config.data.max_node_num,
+#             "nhid": config_m.nhid,
+#             "num_layers": config_m.num_layers,
+#             "num_linears": config_m.num_linears,
+#             "c_init": config_m.c_init,
+#             "c_hid": config_m.c_hid,
+#             "c_final": config_m.c_final,
+#             "adim": config_m.adim,
+#             "num_heads": config_m.num_heads,
+#             "conv": config_m.conv,
+#         }
+#     return params_x, params_adj
 
 
-def load_ckpt(config, device, ts=None, return_ckpt=False):
-    device_id = f"cuda:{device[0]}" if isinstance(device, list) else device
-    if ts is not None:
-        config.ckpt = ts
-    path = (f"./checkpoints/{config.data.name}/{config.exp_name}/{ckpt}.pth")
-    ckpt = torch.load(path, map_location=device_id)
+def load_ckpt(config, return_ckpt=False):
+
+    path = config.sampler.ckp_path
+    ckpt = torch.load(path, map_location=config.device)
     print(f"{path} loaded")
     ckpt_dict = {
         "config": ckpt["model_config"],
@@ -314,8 +368,9 @@ def load_ckpt(config, device, ts=None, return_ckpt=False):
     return ckpt_dict
 
 
-def load_model_from_ckpt(params, state_dict, device):
-    model = load_model(params)
+def load_model_from_ckpt(config, params, state_dict):
+    model = load_model(config, params)
+    device = config.device
     if "module." in list(state_dict.keys())[0]:
         # strip 'module.' at front; for DataParallel models
         state_dict = {k[7:]: v for k, v in state_dict.items()}

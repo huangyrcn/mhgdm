@@ -12,4 +12,4 @@ schnetpack==1.0.1
 scikit_learn==1.2.0
 scipy==1.10.0
 tqdm==4.64.1
-easydict==1.9
+easydict==1.

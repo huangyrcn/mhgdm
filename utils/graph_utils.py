@@ -140,9 +140,11 @@ def pow_tensor(x, cnum):
 
 
 # -------- Create padded adjacency matrices --------
-def pad_adjs(ori_adj, node_number):
-    a = ori_adj
-    ori_len = a.shape[-1]
+
+def pad_adjs(adj, node_number):
+    """Pad adjacency matrix to (node_number, node_number)"""
+    a = adj
+    ori_len = a.shape[0]
     if ori_len == node_number:
         return a
     if ori_len > node_number:
@@ -151,30 +153,63 @@ def pad_adjs(ori_adj, node_number):
     a = np.concatenate([a, np.zeros([node_number - ori_len, node_number])], axis=0)
     return a
 
+def pad_features(x, node_number, feature_dim):
+    """Pad feature matrix to (node_number, feature_dim)"""
+    n_nodes, feat_dim = x.shape
+    if n_nodes > node_number:
+        raise ValueError(f'n_nodes {n_nodes} > node_number {node_number}')
+    if feat_dim > feature_dim:
+        raise ValueError(f'feat_dim {feat_dim} > feature_dim {feature_dim}')
 
-def graphs_to_tensor(graph_list, max_node_num):
+    padded_x = np.zeros((node_number, feature_dim), dtype=x.dtype)
+    padded_x[:n_nodes, :feat_dim] = x
+    return padded_x
+
+def graphs_to_tensor(graph_list, max_node_num, max_feat_num):
+    """
+    Convert a list of nx.Graphs into padded adjacency and feature tensors.
+    (默认启用pad，必须提供 max_node_num 和 max_feat_num)
+
+    Args:
+        graph_list: list of networkx.Graph, each with node attribute 'feature'
+        max_node_num: int, pad all graphs to this node number
+        max_feat_num: int, pad all node features to this feature dimension
+
+    Returns:
+        adjs_tensor: torch.FloatTensor, (batch_size, max_node_num, max_node_num)
+        x_tensor: torch.FloatTensor, (batch_size, max_node_num, max_feat_num)
+    """
     adjs_list = []
-    max_node_num = max_node_num
+    x_list = []
 
     for g in graph_list:
         assert isinstance(g, nx.Graph)
+
         node_list = []
+        feature_list = []
+
         for v, feature in g.nodes.data('feature'):
             node_list.append(v)
+            feature_list.append(feature)
 
-        adj = nx.to_numpy_matrix(g, nodelist=node_list)
-        padded_adj = pad_adjs(adj, node_number=max_node_num)
-        adjs_list.append(padded_adj)
+        adj = nx.to_numpy_array(g, nodelist=node_list)
+        x = np.stack(feature_list, axis=0)
+        if len(x.shape) == 1:
+            x = x[:, None]   # 如果是标量特征，扩展成 (n_nodes, 1)
 
-    del graph_list
+        adj = pad_adjs(adj, max_node_num)
+        x = pad_features(x, max_node_num, max_feat_num)
+
+        adjs_list.append(adj)
+        x_list.append(x)
 
     adjs_np = np.asarray(adjs_list)
-    del adjs_list
+    x_np = np.asarray(x_list)
 
     adjs_tensor = torch.tensor(adjs_np, dtype=torch.float32)
-    del adjs_np
+    x_tensor = torch.tensor(x_np, dtype=torch.float32)
 
-    return adjs_tensor 
+    return adjs_tensor, x_tensor
 
 
 def graphs_to_adj(graph, max_node_num):

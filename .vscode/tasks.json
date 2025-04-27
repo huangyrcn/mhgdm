@@ -1,0 +1,23 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run main.py",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "main.py",
+                "data.batch_size=128"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        }
+       
+    ]
+} 

@@ -8,6 +8,6 @@ lr_schedule: true
 num_epochs: 5000
 print_interval: 5
 reduce_mean: true
-save_interval: 10
+save_interval: 1
 weight_decay: 0.0001
 

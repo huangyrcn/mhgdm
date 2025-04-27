@@ -13,7 +13,7 @@ from models.HVAE import HVAE
 from utils.logger import Logger, set_log, start_log, train_log, sample_log, check_log
 from utils.loader import (
     load_ckpt,
-
+    load_data,  # Add load_data import
     load_seed,
     load_device,
     load_model_from_ckpt,
@@ -39,13 +39,13 @@ class Sampler(object):
 
     def sample(self, independent=True):
         # -------- Load checkpoint --------
-        self.ckpt_dict = load_ckpt(self.config, self.device)
+        self.ckpt_dict = load_ckpt(self.config)
         self.configt = self.ckpt_dict["config"]
         self.model_x = load_model_from_ckpt(
-            self.ckpt_dict["params_x"], self.ckpt_dict["x_state_dict"], self.device
+            self.config, self.ckpt_dict["params_x"], self.ckpt_dict["x_state_dict"]
         )
         self.model_adj = load_model_from_ckpt(
-            self.ckpt_dict["params_adj"], self.ckpt_dict["adj_state_dict"], self.device
+            self.config, self.ckpt_dict["params_adj"], self.ckpt_dict["adj_state_dict"]
         )
         if independent:
             if self.config.wandb.no_wandb:
@@ -168,7 +168,7 @@ class Sampler_mol(object):
     def sample(self, independent=True):
 
         # -------- Load checkpoint --------
-        self.ckpt_dict = load_ckpt(self.config, self.device)
+        self.ckpt_dict = load_ckpt(self.config)
         self.configt = self.ckpt_dict["config"]
 
         # -------- Load models --------

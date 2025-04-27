@@ -1,0 +1,16 @@
+model_type: x_poincare_proto
+max_feat_num: ${model.max_feat_num}  # 引用基础配置中的值
+depth: 5
+nhid: 32
+manifold: Lorentz
+edge_dim: 1
+GCN_type: HGAT
+num_heads: 4
+dropout: 0.0
+use_norm: ln
+msg_transform: true
+sum_transform: true
+use_centroid: false
+normalization_factor: 1
+c: 0.01
+proto_weight: 0.3 

@@ -4,12 +4,22 @@ defaults:
   - data : ENZYMES
   - fsl_task : 10shot
   - model : score
-  - train : train_score
+  - model/x: poincare_proto  # 指定编码器
+  - model/adj: poincare_proto  # 指定解码器
+  - train : train_score   
 
 
-exp_name: "proto_guide_score_model"
+
+# 实验配置
+exp_name: "${model.model_type}_model_train"
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
+
+
+
 seed: 4
-device: cuda
+device: auto
+device_count: 1
 
 hydra:
   run:
@@ -24,7 +34,7 @@ hydra:
   verbose: false
 
 wandb:
-  no_wandb: false
+  no_wandb: true
   online: true # Set to false for offline logging
   project: MHGDM
   wandb_usr: huangyr
