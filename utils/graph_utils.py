@@ -165,20 +165,9 @@ def pad_features(x, node_number, feature_dim):
     padded_x[:n_nodes, :feat_dim] = x
     return padded_x
 
-def graphs_to_tensor(graph_list, max_node_num, max_feat_num):
-    """
-    Convert a list of nx.Graphs into padded adjacency and feature tensors.
-    (默认启用pad，必须提供 max_node_num 和 max_feat_num)
 
-    Args:
-        graph_list: list of networkx.Graph, each with node attribute 'feature'
-        max_node_num: int, pad all graphs to this node number
-        max_feat_num: int, pad all node features to this feature dimension
-
-    Returns:
-        adjs_tensor: torch.FloatTensor, (batch_size, max_node_num, max_node_num)
-        x_tensor: torch.FloatTensor, (batch_size, max_node_num, max_feat_num)
-    """
+def graphs_to_tensor(graph_list, max_node_num, max_feat_num=None):
+  
     adjs_list = []
     x_list = []
 
@@ -193,23 +182,23 @@ def graphs_to_tensor(graph_list, max_node_num, max_feat_num):
             feature_list.append(feature)
 
         adj = nx.to_numpy_array(g, nodelist=node_list)
-        x = np.stack(feature_list, axis=0)
-        if len(x.shape) == 1:
-            x = x[:, None]   # 如果是标量特征，扩展成 (n_nodes, 1)
-
         adj = pad_adjs(adj, max_node_num)
-        x = pad_features(x, max_node_num, max_feat_num)
-
         adjs_list.append(adj)
-        x_list.append(x)
 
-    adjs_np = np.asarray(adjs_list)
-    x_np = np.asarray(x_list)
+        if max_feat_num is not None:
+            x = np.stack(feature_list, axis=0)
+            if len(x.shape) == 1:
+                x = x[:, None]  # 如果是标量特征，扩展成 (n_nodes, 1)
+            x = pad_features(x, max_node_num, max_feat_num)
+            x_list.append(x)
 
-    adjs_tensor = torch.tensor(adjs_np, dtype=torch.float32)
-    x_tensor = torch.tensor(x_np, dtype=torch.float32)
+    adjs_tensor = torch.tensor(np.asarray(adjs_list), dtype=torch.float32)
 
-    return adjs_tensor, x_tensor
+    if max_feat_num is None:
+        return adjs_tensor
+    else:
+        x_tensor = torch.tensor(np.asarray(x_list), dtype=torch.float32)
+        return adjs_tensor, x_tensor
 
 
 def graphs_to_adj(graph, max_node_num):

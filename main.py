@@ -1,28 +1,4 @@
 # main.py
-"""
-入口脚本，用于运行不同的训练/采样任务。
-
-这个脚本是项目的统一入口点，通过hydra配置系统来管理不同的实验。
-根据实验名称中的关键词来决定运行哪个函数：
-- ae: 训练自编码器模型
-- score: 训练分数模型
-- fsl: 训练少样本学习模型
-- sample: 使用训练好的模型进行采样
-
-使用方法：
-1. 通过配置文件指定实验名称：
-   exp_name: "proto_guide_ae_model"  # 在config.yaml中设置
-
-2. 或通过命令行参数指定：
-   python main.py exp_name=proto_guide_score_model
-
-配置系统：
-- 使用hydra管理配置
-- 配置文件位于configs目录
-- 支持配置继承和覆盖
-- 每次运行的配置会保存到configs/running/{run_name}.yaml
-"""
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from trainer import Trainer

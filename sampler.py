@@ -75,8 +75,8 @@ class Sampler(object):
         self.train_graph_list, self.test_graph_list = load_data(self.configt, get_graph_list=True)
 
         self.log_folder_name, self.log_dir, _ = set_log(self.configt, is_train=False)
-        self.log_name = f"{self.config.ckpt}-sample"
-        # self.log_name = f"{self.config.exp_name}-sample"
+
+        self.log_name = f"{self.config.exp_name}-sample"
         logger = Logger(str(os.path.join(self.log_dir, f"{self.log_name}.log")), mode="a")
 
         if not check_log(self.log_folder_name, self.log_name):
@@ -121,6 +121,8 @@ class Sampler(object):
             gen_graph_list.extend(adjs_to_graphs(samples_int, True))
 
         gen_graph_list = gen_graph_list[: len(self.test_graph_list)]
+        
+        
         # -------- Evaluation --------
         methods, kernels = load_eval_settings(self.config.data.name)
         result_dict = eval_graph_list(

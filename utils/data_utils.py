@@ -195,7 +195,7 @@ class MyDataset:
 
         self.train_graphs = []
         self.test_graphs = []
-        self.train_labels = []
+        train_labels = []
         test_labels = []
 
         for i in range(len(all_graphs)):
@@ -203,7 +203,7 @@ class MyDataset:
             if original_label in self.train_classes:
                 all_graphs[i].label = train_classes_mapping[int(original_label)]
                 self.train_graphs.append(all_nx_graphs[i])
-                self.train_labels.append(all_graphs[i].label)
+                train_labels.append(all_graphs[i].label)
             elif original_label in self.test_classes:
                 all_graphs[i].label = test_classes_mapping[int(original_label)]
                 self.test_graphs.append(all_nx_graphs[i])
