@@ -174,12 +174,13 @@ class MyDataset:
             label_dict,
             tagset,
             all_nx_graphs,
-            self.config.data.max_node_num,
-            self.config.data.max_feat_num,
+           max_node_num,
+            max_feat_num,
         ) = load_from_file(config=self.config, degree_as_tag=True)
 
         self.max_node_num = self.config.data.max_node_num
         self.max_feat_num = self.config.data.max_feat_num
+        self.batch_size = self.config.data.batch_size
         self.tagset = tagset
 
         with open(f"./datasets/{config.data.name}/train_test_classes.json", "r") as f:

@@ -2,15 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Debug main.py with batch_size=128",
+            "name": "Python: Debug main.py",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "data.batch_size=128"
+                "data.batch_size=256"
             ],
-            "justMyCode": true
+            "justMyCode": true,
         }
     ]
 }

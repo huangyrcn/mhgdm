@@ -222,6 +222,7 @@ class ScoreNetworkA_poincare_proto(BaselineNetwork):
         self.num_heads = num_heads
         self.conv = conv
         self.manifold = manifold
+        self.proto_weight = kwargs.get('proto_weight', 0.1)  # Default weight for proto guidance
         if self.manifold is not None:
             self.centroid = CentroidDistance(self.nfeat,self.nfeat,manifold)
         self.layers = torch.nn.ModuleList()
@@ -250,8 +251,16 @@ class ScoreNetworkA_poincare_proto(BaselineNetwork):
             nn.Linear(self.nfeat, 1)
         )
         self.mask.unsqueeze_(0)
+        self.proto_proj = MLP(          # 3 层 MLP，和 temb_net 写法一致
+            num_layers=3,
+            input_dim=max_feat_num,     # 10
+            hidden_dim=2*max_feat_num,  # 20
+            output_dim=nhid,            # 32
+            use_bn=False,
+            activate_func=F.elu
+        )
 
-    def forward(self, x, adj, flags,t,protos):
+    def forward(self, x, adj, flags, t, labels, protos):
         temb = get_timestep_embedding(t, self.nfeat)
         if self.manifold is not None:
             x = self.centroid(x)
@@ -259,28 +268,32 @@ class ScoreNetworkA_poincare_proto(BaselineNetwork):
         adjc = pow_tensor(adj, self.c_init)
 
         adj_list = [adjc]
-        for _ in range(self.num_layers):
-            x, adjc = self.layers[_](x, adjc, flags)
+        for i in range(self.num_layers):
+            x, adjc = self.layers[i](x, adjc, flags)
             adj_list.append(adjc)
 
-        adjs = torch.cat(adj_list, dim=1).permute(0, 2, 3, 1)   # cat的dim进mlp
-        out_shape = adjs.shape[:-1]  # B x N x N
+        adjs = torch.cat(adj_list, dim=1).permute(0, 2, 3, 1)   # (B, N, N, L)
+        out_shape = adjs.shape[:-1]  # (B, N, N)
         score = self.final(adjs).view(*out_shape) * self.time_scale(temb)
-        # ------- 方案一：引入 protos 的结构引导 -------
+
+        # --- 💡 Proto引导 ---
         if protos is not None:
-            # 计算语义相似度辅助项
-            proto_dist = torch.cdist(x, protos)  # [B, N, C]
-            proto_sim = -proto_dist              # 越大越相似
+            proto = protos[labels]                       # (B, N, 10)
+            proto = self.proto_proj(proto)               # (B, N, 32)
+            # 计算每个节点到proto的相似性（负欧氏距离）
+            proto_dist = torch.norm(x - proto, dim=-1)  # (B, N)
+            proto_sim = -proto_dist
 
-            proto_diff = proto_sim.unsqueeze(2) - proto_sim.unsqueeze(1)  # [B, N, N, C]
-            proto_edge_affinity = -torch.norm(proto_diff, dim=-1)         # [B, N, N]
+            proto_diff = proto_sim.unsqueeze(2) - proto_sim.unsqueeze(1)  # (B, N, N)
+            proto_edge_affinity = -torch.abs(proto_diff)  # (B, N, N)
 
-            # 融合：结构 score + 原型引导项
-            score = score + self.proto_weight * proto_edge_affinity  # ← 关键融合
-        # ---------------------------------------------
+            score = score + self.proto_weight * proto_edge_affinity
+
+        # --- Mask处理 ---
         self.mask = self.mask.to(score.device)
         score = score * self.mask
         score = mask_adjs(score, flags)
+
         return score
 
 

@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from utils.protos_utils import compute_protos_from
 from models.HVAE import HVAE
-from sampler import Sampler_mol, Sampler
+from sampler import  Sampler
 from utils.graph_utils import node_flags
 from utils.loader import (
     load_seed,
@@ -261,7 +261,7 @@ class Trainer(object):
         # 计算元训练集的 protos
         protos_train = compute_protos_from(Encoder, self.train_loader, self.device)
         protos_test = compute_protos_from(Encoder, self.test_loader, self.device)
-
+        
         # end region
         # -------- 轮次--------
         best_mean_test_loss = 1e10  # Initialize best mean test loss
@@ -283,7 +283,7 @@ class Trainer(object):
                     train_b, self.device
                 ) 
                 
-                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj, labels,protos_train)
+                loss_x, loss_adj = self.loss_fn(self.model_x, self.model_adj, x, adj,labels,protos_train)
                 if torch.isnan(loss_x):
                     raise ValueError("NaN")
                 self.optimizer_x.zero_grad()
@@ -406,7 +406,7 @@ class Trainer(object):
                 self.config.sampler.scale_eps_x = "1.0" # Corrected typo and type
                 self.config.sampler.ckp_path = f"{save_dir}/epoch_{epoch}.pth"
                 if self.config.data.name == "ENZYMES":
-                    eval_dict = Sampler(self.config).sample(independent=False)    
+                    eval_dict = Sampler(self.config).sample(independent=False, protos_test=protos_test)    
                 eval_dict["epoch"] = epoch + 1
                 wandb.log(eval_dict, commit=True)
                 logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)

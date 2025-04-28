@@ -25,6 +25,8 @@ from utils.ema import ExponentialMovingAverage
 from utils.data_utils import Dataset
 from .data_utils import load_data
 
+import subprocess
+
 
 def load_seed(seed):
     # Random Seed
@@ -39,13 +41,6 @@ def load_seed(seed):
 
     return seed
 
-
-import torch
-import subprocess
-import torch
-import subprocess
-
-
 def load_device(config):
     def get_gpu_memory():
         try:
@@ -55,40 +50,32 @@ def load_device(config):
             )
             return [int(x) for x in output.strip().split("\n")]
         except Exception as e:
-            print(f"Error querying GPU: {e}")
+            print(f"无法获取 GPU 内存信息: {e}")
             return None
 
-    if config.device == "auto":
-        memory_used = get_gpu_memory()
-        if memory_used is None or not torch.cuda.is_available():
-            print("使用 CPU。")
-            config.device = "cpu"
-            return torch.device("cpu")
+    memory_used = get_gpu_memory()
+    if memory_used is None or not torch.cuda.is_available():
+        print("使用 CPU。")
+        config.device = "cpu"
+        return torch.device("cpu")
 
-        device_count = getattr(config, "device_count", 1)
-        gpu_indices = sorted(range(len(memory_used)), key=lambda i: memory_used[i])[:device_count]
+    device_count = getattr(config, "device_count", 1)
+    device_count = min(device_count, torch.cuda.device_count())
 
-        if device_count == 1:
-            selected = gpu_indices[0]
-            config.device = f"cuda:{selected}"  # 这里更新 config
-            torch.cuda.set_device(selected)
-            print(f"自动选择GPU: cuda:{selected}")
-            return torch.device(config.device)
-        else:
-            config.device = ",".join(
-                [f"cuda:{i}" for i in gpu_indices]
-            )  # 多张的话你可以看情况用 DataParallel
-            for idx in gpu_indices:
-                print(f"使用GPU: cuda:{idx}")
-            return [torch.device(f"cuda:{idx}") for idx in gpu_indices]
+    # 按显存占用排序，选择空闲的 GPU
+    gpu_indices = sorted(range(len(memory_used)), key=lambda i: memory_used[i])[:device_count]
 
+    if device_count == 1:
+        selected = gpu_indices[0]
+        config.device = f"cuda:{selected}"
+        torch.cuda.set_device(selected)
+        print(f"自动选择GPU: cuda:{selected}")
+        return torch.device(config.device)
     else:
-        device = torch.device(config.device)
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
-        print(f"使用指定设备: {config.device}")
-        return device
-
+        config.device = ",".join([f"cuda:{i}" for i in gpu_indices])
+        for idx in gpu_indices:
+            print(f"使用GPU: cuda:{idx}")
+        return gpu_indices  # ✅ 注意：返回的是 [0,1] 这样纯编号list
 
 def load_model(config, params):
     """
@@ -206,29 +193,23 @@ def load_sampling_fn(config_train, config_module, config_sample, device, manifol
     sde_adj = load_sde(config_train.sde.adj)
     max_node_num = config_train.data.max_node_num
 
-    device_id = f"cuda:{device[0]}" if isinstance(device, list) else device
-
     get_sampler = get_pc_sampler
 
-    if config_train.data.name in ["QM9", "ZINC250k"]:
-        shape_x = (batch_size, max_node_num, config_train.data.max_feat_num)
-        shape_adj = (batch_size, max_node_num, max_node_num)
-    else:
-        shape_x = (config_train.data.batch_size, max_node_num, config_train.data.max_feat_num)
-        shape_adj = (config_train.data.batch_size, max_node_num, max_node_num)
-
+    shape_x = (config_train.data.batch_size, max_node_num, config_train.data.max_feat_num)
+    shape_adj = (config_train.data.batch_size, max_node_num, max_node_num)
+    
     sampling_fn = get_sampler(
         sde_x=sde_x,
         sde_adj=sde_adj,
         shape_x=shape_x,
         shape_adj=shape_adj,
+        device=device,
         predictor=config_module.predictor,
         corrector=config_module.corrector,
         probability_flow=config_sample.probability_flow,
         continuous=True,
         denoise=config_sample.noise_removal,
         eps=config_sample.eps,
-        device=device_id,
         config_module=config_module,
     )
     return sampling_fn
@@ -351,7 +332,7 @@ def load_sampling_fn(config_train, config_module, config_sample, device, manifol
 def load_ckpt(config, return_ckpt=False):
 
     path = config.sampler.ckp_path
-    ckpt = torch.load(path, map_location=config.device)
+    ckpt = torch.load(path, map_location=config.device,weights_only=False)
     print(f"{path} loaded")
     ckpt_dict = {
         "config": ckpt["model_config"],

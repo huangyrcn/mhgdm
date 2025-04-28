@@ -185,6 +185,7 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
         self.nfeat = max_feat_num
         self.depth = depth
         self.nhid = nhid
+        self.proto_weight = kwargs.get('proto_weight', 0.1)  
         # 根据GCN_type选择层类型（支持欧式和双曲）
         if GCN_type == 'GCN':
             layer_type = GCLayer
@@ -222,43 +223,51 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
             nn.ReLU(),
             nn.Linear(self.nfeat, 1)
         )
+        self.proto_proj = MLP(          # 3 层 MLP，和 temb_net 写法一致
+            num_layers=3,
+            input_dim=max_feat_num,     # 10
+            hidden_dim=2*max_feat_num,  # 20
+            output_dim=nhid,            # 32
+            use_bn=False,
+            activate_func=F.elu
+        )
 
-    def forward(self, x, adj, flags, t,protos):
-        # 前向传播：双曲空间特征变换+多层HGAT/HGCN+时间调制
+    def forward(self, x, adj, flags, t, labels, protos):
         xt = x.clone()
         temb = get_timestep_embedding(t, self.nfeat)
-        x = exp_after_transp0(x,self.temb_net(temb),self.manifolds[0])
+        x = exp_after_transp0(x, self.temb_net(temb), self.manifolds[0])
+
         if self.manifold is not None:
             x_list = [self.manifolds[0].logmap0(x)]
         else:
             x_list = [x]
+
         for i in range(self.depth):
             x = self.layers[i]((x, adj))[0]
             if self.manifold is not None:
                 x_list.append(self.manifolds[i+1].logmap0(x))
             else:
                 x_list.append(x)
-        xs = torch.cat(x_list, dim=-1) # B x N x (F + num_layers x H)
+
+        xs = torch.cat(x_list, dim=-1)  # (B, N, F + depth * H)
         out_shape = (adj.shape[0], adj.shape[1], -1)
         x = self.final(xs).view(*out_shape)
-        # expmap0/logmap等操作保证输出在切空间
+
         x = self.manifold.expmap0(x)
         x = self.manifold.logmap(xt, x)
 
-            # 💡 融入原型相似性引导
+        # --- 💡 Proto引导 ---
         if protos is not None:
-            proto_dist = torch.cdist(xt, protos)       # [B, N, C]
-            proto_sim = -proto_dist                    # 越大越相似
-            proto_context = torch.matmul(
-                torch.softmax(proto_sim, dim=-1), protos
-            )                                          # [B, N, d]
-            proto_diff = self.manifold.logmap0(proto_context)  # 映射到切空间
-            x = x + self.proto_weight * proto_diff     # 加权叠加语义引导
+            proto = protos[labels]                       # (B, N, 10)
+            proto_diff = self.manifold.logmap0(proto)
+            x = x + self.proto_weight * proto_diff
 
-        # 时间缩放，包含conformal factor
-
-        time_input = torch.cat([temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1)
+        # --- 时间调制 ---
+        time_input = torch.cat(
+            [temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1
+        )
         x = x * self.time_scale(time_input)
         x = mask_x(x, flags)
-        
+
         return x
+

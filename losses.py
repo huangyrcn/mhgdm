@@ -6,7 +6,7 @@ from utils.sde_lib import VPSDE, VESDE, subVPSDE
 from utils.graph_utils import node_flags, mask_x, mask_adjs, gen_noise
 
 
-def get_score_fn(sde, model, train=True, continuous=True,protos=None):
+def get_score_fn(sde, model, train=True, continuous=True):
 
     if not train:
         model.eval()
@@ -14,12 +14,12 @@ def get_score_fn(sde, model, train=True, continuous=True,protos=None):
 
     if isinstance(sde, VPSDE) or isinstance(sde, subVPSDE):
 
-        def score_fn(x, adj, flags, t, protos=None): # Keep protos here
+        def score_fn(x, adj, flags, t,labels=None, protos=None): # Keep protos here
             # Scale neural network output by standard deviation and flip sign
             if continuous:
-                labels = t * 999
+                t_labels = t * 999
                 # Pass protos to the model_fn call
-                score = model_fn(x, adj, flags, labels, protos=protos)
+                score = model_fn(x, adj, flags, t_labels,labels, protos)
                 std = sde.marginal_prob(torch.zeros_like(adj), t)[1]
             else:
                 raise NotImplementedError(f"Discrete not supported")
@@ -29,12 +29,12 @@ def get_score_fn(sde, model, train=True, continuous=True,protos=None):
 
     elif isinstance(sde, VESDE):
 
-        def score_fn(x, adj, flags, t, protos=None): # Keep protos here
+        def score_fn(x, adj, flags, t,labels=None, protos=None): # Keep protos here
             if continuous:
-                labels = sde.T - t
-                labels *= sde.N - 1
+                t_labels= sde.T - t
+                t_labels *= sde.N - 1
                 # Pass protos to the model_fn call
-                score = model_fn(x, adj, flags, labels, protos=protos)
+                score = model_fn(x, adj, flags,t_labels, labels, protos)
             else:
                 raise NotImplementedError(f"Discrete not supported")
 
@@ -98,8 +98,8 @@ def get_sde_loss_fn(
         # endregion 
 
         # region 计算score
-        score_x = score_fn_x(perturbed_x, perturbed_adj, flags, t)
-        score_adj = score_fn_adj(perturbed_x, perturbed_adj, flags, t)
+        score_x = score_fn_x(perturbed_x, perturbed_adj, flags, t,labels,protos)
+        score_adj = score_fn_adj(perturbed_x, perturbed_adj, flags, t,labels,protos)
         # endregion
 
         # 计算损失

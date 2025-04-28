@@ -129,7 +129,7 @@ class LangevinCorrector(Corrector):
         super().__init__(sde, score_fn, snr, scale_eps, n_steps)
         self.obj = obj
 
-    def update_fn(self, x, adj, flags, t):
+    def update_fn(self, x, adj, flags, t,labels=None, protos=None):
         sde = self.sde
         score_fn = self.score_fn
         n_steps = self.n_steps
@@ -145,7 +145,7 @@ class LangevinCorrector(Corrector):
         if self.obj == "x":
             x_mean = None
             for i in range(n_steps):
-                grad = score_fn(x, adj, flags, t)
+                grad = score_fn(x, adj, flags, t,labels,protos)
                 noise = gen_noise(x, flags, sym=False)
                 noise_norm = torch.norm(noise, dim=-1).mean()
                 if sde.hyp:
@@ -182,17 +182,17 @@ def get_pc_sampler(
     sde_adj,
     shape_x,
     shape_adj,
+    device,
     predictor="Euler",
     corrector="None",
     probability_flow=False,
     continuous=False,
     denoise=True,
     eps=1e-3,
-    device="cuda",
     config_module=None,
 ):
 
-    def pc_sampler(model_x, model_adj, init_flags):
+    def pc_sampler(model_x, model_adj, init_flags, protos=None):
         n_steps = config_module.n_steps
         snr_x = config_module.snr_x
         scale_eps_x = config_module.scale_eps_x
@@ -230,8 +230,9 @@ def get_pc_sampler(
                 vec_t = torch.ones((shape_adj[0], 1, 1), device=t.device) * t
 
                 _x = x
-                x, x_mean = corrector_obj_x.update_fn(x, adj, flags, vec_t)
-                adj, adj_mean = corrector_obj_adj.update_fn(_x, adj, flags, vec_t)
+
+                x, x_mean = corrector_obj_x.update_fn(x, adj, flags, vec_t,protos)
+                adj, adj_mean = corrector_obj_adj.update_fn(_x, adj, flags, vec_t,protos)
 
                 _x = x
                 x, x_mean = predictor_obj_x.update_fn(x, adj, flags, vec_t)

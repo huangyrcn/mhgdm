@@ -1,5 +1,5 @@
 model_type: score
-ae_path: checkpoints/ENZYMES/proto_guide_ae_model/20250427_170317/best.pth
+ae_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth
 adj: adj_poincare_proto
 
 x: x_poincare_proto

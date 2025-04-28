@@ -6,7 +6,7 @@ defaults:
   - model : score
   - model/x: poincare_proto  # 指定编码器
   - model/adj: poincare_proto  # 指定解码器
-  - train : train_score   
+  - train : train_score
 
 
 
