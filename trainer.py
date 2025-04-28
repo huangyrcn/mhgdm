@@ -401,15 +401,15 @@ class Trainer(object):
             # endregion
 
             # region -------- Sample evaluation --------
-            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
-                self.config.sampler.snr_x = "0.1" 
-                self.config.sampler.scale_eps_x = "1.0" # Corrected typo and type
-                self.config.sampler.ckp_path = f"{save_dir}/epoch_{epoch}.pth"
-                if self.config.data.name == "ENZYMES":
-                    eval_dict = Sampler(self.config).sample(independent=False, protos_test=protos_test)    
-                eval_dict["epoch"] = epoch + 1
-                wandb.log(eval_dict, commit=True)
-                logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
+            # if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
+            #     self.config.sampler.snr_x = "0.1" 
+            #     self.config.sampler.scale_eps_x = "1.0" # Corrected typo and type
+            #     self.config.sampler.ckp_path = f"{save_dir}/epoch_{epoch}.pth"
+            #     if self.config.data.name == "ENZYMES":
+            #         eval_dict = Sampler(self.config).sample(independent=False)    
+            #     eval_dict["epoch"] = epoch + 1
+            #     wandb.log(eval_dict, commit=True)
+            #     logger.log(f"[EPOCH {epoch + 1:04d}] Saved! \n" + str(eval_dict), verbose=False)
             # endregion
             
             # endreigon
