@@ -2,6 +2,7 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from trainer import Trainer
+from sampler import Sampler
 import ml_collections
 import os
 
@@ -33,18 +34,21 @@ def main(cfg: DictConfig):
     print(f"Configuration saved to {config_path}")
     
     # 初始化训练器
-    trainer = Trainer(cfg_dict)
-    
+
     # 根据实验名称中的关键词选择运行模式
     exp_name = cfg.exp_name.lower()
     if "ae" in exp_name:
+        trainer = Trainer(cfg_dict)
         trainer.train_ae()
     elif "score" in exp_name:
+        trainer = Trainer(cfg_dict)
         trainer.train_score()
     elif "fsl" in exp_name:
+        trainer = Trainer(cfg_dict)
         trainer.train_fsl()
     elif "sample" in exp_name:
-        trainer.sample()
+        sampler= Sampler("ckpt",cfg_dict)
+        sampler.sample(need_eval=True)
     else:
         raise ValueError(f"Unknown experiment type in name: {cfg.exp_name}. "
                         f"Name should contain one of: ae, score, fsl, sample")

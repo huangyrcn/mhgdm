@@ -3,17 +3,36 @@ defaults:
   - _self_
   - data : ENZYMES
   - fsl_task : 10shot
-  - model : score
-  - model/x: poincare_proto  # 指定编码器
-  - model/adj: poincare_proto  # 指定解码器
-  - train : train_score
+
+  - train : sample
 
 
 
 # 实验配置
-exp_name: "${model.model_type}_model_train"
+exp_name: "sample"
 timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
+
+
+sample:
+  eps: 0.0001
+  noise_removal: true
+  probability_flow: false
+  seed: 1
+  use_ema: true
+
+sampler:
+  corrector: Langevin
+  n_steps: 1
+  predictor: Euler
+  scale_eps_A: '1.0'
+  scale_eps_x: '1.0'
+  snr_A: '0.25'
+  snr_x: '0.25'
+  proto_guide: true
+  
+ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth
+score_ckpt_path: checkpoints/ENZYMES/score_model_train/20250429_002445/best.pth
 
 
 

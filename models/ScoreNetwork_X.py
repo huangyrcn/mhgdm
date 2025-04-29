@@ -132,7 +132,7 @@ class ScoreNetworkX_poincare(torch.nn.Module):
             nn.Linear(self.nfeat, 1)
         )
 
-    def forward(self, x, adj, flags, t):
+    def forward(self, x, adj, flags, t,labels, protos):
         # Check and adapt input dimension if necessary
         if x.size(-1) != self.nfeat:
             if x.size(-1) < self.nfeat:
@@ -218,10 +218,11 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
         # 时间嵌入和缩放，用于扩散模型的时间调制
         self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2*self.nfeat, output_dim=self.nfeat,
                             use_bn=False, activate_func=F.elu)
-        self.time_scale = nn.Sequential(
+        self.time_scale_net = nn.Sequential(
             nn.Linear(self.nfeat+1, self.nfeat),
-            nn.ReLU(),
-            nn.Linear(self.nfeat, 1)
+            nn.SiLU(),          # ⚡ 更平滑，不是 ReLU
+            nn.Linear(self.nfeat, 1),
+            nn.Sigmoid()        # ⚡ 限制输出在 (0,1)
         )
         self.proto_proj = MLP(          # 3 层 MLP，和 temb_net 写法一致
             num_layers=3,
@@ -231,43 +232,96 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
             use_bn=False,
             activate_func=F.elu
         )
+        self.debug = kwargs.get("debug", False)
+        self.global_step = 0
 
+  # ======== 辅助：调试输出 ========
+    def dbgs(self, name, tensor):
+        if not self.debug:
+            return
+        if tensor is None:
+            print(f"[DBG] {name}: None")
+            return
+        with torch.no_grad():
+            nan_cnt = (~torch.isfinite(tensor)).sum().item()
+            t_min = tensor.min().item() if torch.isfinite(tensor).any() else float('nan')
+            t_max = tensor.max().item() if torch.isfinite(tensor).any() else float('nan')
+            print(f"[DBG] {name}: shape={tuple(tensor.shape)}, min={t_min:.4e}, max={t_max:.4e}, nan/inf={nan_cnt}")
+    # ======== forward ========
     def forward(self, x, adj, flags, t, labels, protos):
+        """x: (B, N, F)  adj: (B, N, N)  t: (B,)  labels: (B, N)"""
+        self.global_step += 1
         xt = x.clone()
-        temb = get_timestep_embedding(t, self.nfeat)
-        x = exp_after_transp0(x, self.temb_net(temb), self.manifolds[0])
+        self.dbgs("x_init", x)
 
+        # ---- 时间嵌入 ----
+        temb = get_timestep_embedding(t, self.nfeat)  # (B, F)
+        self.dbgs("temb", temb)
+        x = exp_after_transp0(x, self.temb_net(temb), self.manifolds[0])
+        self.dbgs("x_after_exp_transp0", x)
+
+        # ---- 进入 list ----
         if self.manifold is not None:
             x_list = [self.manifolds[0].logmap0(x)]
         else:
             x_list = [x]
+        self.dbgs("logmap0_x0", x_list[0])
 
+        # ---- GNN layers ----
         for i in range(self.depth):
             x = self.layers[i]((x, adj))[0]
+            name = f"layer{i}_out"
+            self.dbgs(name, x)
             if self.manifold is not None:
-                x_list.append(self.manifolds[i+1].logmap0(x))
+                x_list.append(self.manifolds[i + 1].logmap0(x))
+                self.dbgs(name + "_logmap0", x_list[-1])
             else:
                 x_list.append(x)
 
-        xs = torch.cat(x_list, dim=-1)  # (B, N, F + depth * H)
+        # ---- 拼接 & final MLP ----
+        xs = torch.cat(x_list, dim=-1)
+        self.dbgs("xs_cat", xs)
         out_shape = (adj.shape[0], adj.shape[1], -1)
         x = self.final(xs).view(*out_shape)
+        self.dbgs("x_after_final", x)
+
+        # ---- manifold delta ----
+        # --- 等比缩放 ---
+        norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+        r_max = 0.5  # 把半径设得更小一些，比如0.5，比0.7更稳
+        scale = torch.where(norm > r_max, r_max / (norm + 1e-6), torch.ones_like(norm))
+        x = x * scale
 
         x = self.manifold.expmap0(x)
+        self.dbgs("x_expmap0", x)
         x = self.manifold.logmap(xt, x)
+        self.dbgs("x_delta", x)
 
-        # --- 💡 Proto引导 ---
+        # ---- Proto 引导 ----
         if protos is not None:
-            proto = protos[labels]                       # (B, N, 10)
+            proto = protos[labels]  # (B, N, F_proto)
             proto_diff = self.manifold.logmap0(proto)
-            x = x + self.proto_weight * proto_diff
+            self.dbgs("proto_diff", proto_diff)
+            warm = min(1.0, self.global_step  / 500)   # 500步渐变，可以自己调
+            x = x + (self.proto_weight * warm) * proto_diff
+            self.dbgs("x_after_proto", x)
 
-        # --- 时间调制 ---
-        time_input = torch.cat(
-            [temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1
-        )
-        x = x * self.time_scale(time_input)
+        # ---- 时间调制 ----
+        time_input = torch.cat([
+            temb.repeat_interleave(x.size(1), dim=0).view(x.size(0), x.size(1), -1),  # (B,N,F)
+            self.manifold.lambda_x(xt, keepdim=True)
+        ], dim=-1)
+        scale_raw = self.time_scale_net(time_input)   
+        scale = 0.25 + 3.75 * scale_raw 
+
+        self.dbgs("time_scale", scale)
+        x = x * scale
+        self.dbgs("x_scaled", x)
+
+        # ---- mask ----
         x = mask_x(x, flags)
+        self.dbgs("x_masked", x)
 
+        # -------- done --------
         return x
 

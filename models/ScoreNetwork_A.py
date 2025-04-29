@@ -190,7 +190,7 @@ class ScoreNetworkA_poincare(BaselineNetwork):
         )
         self.mask.unsqueeze_(0)
 
-    def forward(self, x, adj, flags,t,protos):
+    def forward(self, x, adj, flags,t,labels,protos):
         temb = get_timestep_embedding(t, self.nfeat)
         if self.manifold is not None:
             x = self.centroid(x)

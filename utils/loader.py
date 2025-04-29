@@ -167,7 +167,8 @@ def load_sde(config_sde, manifold=None):
     return sde
 
 
-def load_loss_fn(config, manifold=None, encoder=None):
+
+def load_loss_fn(config,manifold=None, encoder=None):
     reduce_mean = config.train.reduce_mean
     sde_x = load_sde(config.sde.x, manifold)
     sde_adj = load_sde(config.sde.adj)

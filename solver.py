@@ -172,7 +172,7 @@ class LangevinCorrector(Corrector):
         elif self.obj == "adj":
             adj_mean = None
             for i in range(n_steps): # 执行 n_steps 校正
-                grad = score_fn(x, adj, flags, t) # 计算得分函数 (梯度)
+                grad = score_fn(x, adj, flags, t,labels,protos) # 计算得分函数 (梯度)
                 noise = gen_noise(adj, flags) # 生成噪声
                 grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean() # 计算梯度范数
                 noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean() # 计算噪声范数
@@ -201,7 +201,7 @@ def get_pc_sampler(
     config_module=None, # 配置模块
 ):
 
-    def pc_sampler(model_x, model_adj, init_flags, protos=None):
+    def pc_sampler(model_x, model_adj, init_flags,labels, protos=None):
         # 获取配置参数
         n_steps = config_module.n_steps # 校正器步数
         snr_x = config_module.snr_x # x 的信噪比
@@ -233,9 +233,6 @@ def get_pc_sampler(
             x = sde_x.prior_sampling(shape_x).to(device) # 从先验分布采样 x
             adj = sde_adj.prior_sampling_sym(shape_adj).to(device) # 从先验分布采样 adj (对称)
             
-            print(f"pc_sampler - x shape: {x.shape}") # 打印 x 的大小
-            print(f"pc_sampler - adj shape: {adj.shape}") # 打印 adj 的大小
-            sys.exit() # 退出程序
             flags = init_flags # 获取标志位
             x = mask_x(x, flags) # 根据标志位掩码 x
             adj = mask_adjs(adj, flags) # 根据标志位掩码 adj
@@ -250,8 +247,8 @@ def get_pc_sampler(
                 _x = x # 保存当前 x
 
                 # 校正步骤
-                x, x_mean = corrector_obj_x.update_fn(x, adj, flags, vec_t,protos) # 校正 x
-                adj, adj_mean = corrector_obj_adj.update_fn(_x, adj, flags, vec_t,protos) # 校正 adj
+                x, x_mean = corrector_obj_x.update_fn(x, adj, flags, vec_t,labels,protos) # 校正 x
+                adj, adj_mean = corrector_obj_adj.update_fn(_x, adj, flags, vec_t,labels,protos) # 校正 adj
 
                 _x = x # 保存校正后的 x
 

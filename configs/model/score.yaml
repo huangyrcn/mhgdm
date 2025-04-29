@@ -1,8 +1,7 @@
 model_type: score
 ae_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth
-adj: adj_poincare_proto
-
-x: x_poincare_proto
+adj: adj_poincare
+x: x_poincare
 GCN_type: HGAT
 act: LeakyReLU
 adim: 32
@@ -29,8 +28,10 @@ num_linears: 2
 sum_transform: true
 use_centroid: false
 use_norm: ln
-proto_weight: 0.3
+
 
 # 基础参数
 max_feat_num: ${data.max_feat_num}  # 引用 data 配置中的值
 max_node_num: ${data.max_node_num}  # 引用 data 配置中的值
+
+proto_weight: 0.3

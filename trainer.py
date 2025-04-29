@@ -256,13 +256,15 @@ class Trainer(object):
         train_log(logger, self.config)
 
 
-        self.loss_fn = load_loss_fn(self.config, self.manifold, encoder=Encoder)
         # region compute protos
         # 计算元训练集的 protos
+
         protos_train = compute_protos_from(Encoder, self.train_loader, self.device)
         protos_test = compute_protos_from(Encoder, self.test_loader, self.device)
-        
+
         # end region
+        
+        self.loss_fn = load_loss_fn(self.config, self.manifold, encoder=Encoder)
         # -------- 轮次--------
         best_mean_test_loss = 1e10  # Initialize best mean test loss
         for epoch in trange(            0, (self.config.train.num_epochs), desc="[Epoch]", position=1, leave=False ):

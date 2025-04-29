@@ -92,7 +92,7 @@ def get_sde_loss_fn(
         torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model_x, model_adj, x, adj, labels,protos):
+    def loss_fn(model_x, model_adj, x, adj, labels, protos=None):
         """计算 SDE 损失。
 
         Args:
@@ -101,8 +101,6 @@ def get_sde_loss_fn(
             x: 特征张量。
             adj: 邻接矩阵张量。
             labels: 标签（如果适用）。
-            protos: 原型（如果适用）。
-
         Returns:
             特征损失和邻接矩阵损失的元组。
         """

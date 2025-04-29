@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import wandb
 from models.HVAE import HVAE
-
 from utils.logger import Logger, set_log, start_log, train_log, sample_log, check_log
 from utils.loader import (
     load_ckpt,
@@ -20,7 +19,7 @@ from utils.loader import (
     load_ema_from_ckpt,
     load_sampling_fn,
     load_eval_settings,
-    load_batch
+    load_batch,
 )
 from utils.graph_utils import adjs_to_graphs, init_flags, quantize, quantize_mol
 from utils.plot import save_graph_list, plot_graphs_list
@@ -29,12 +28,15 @@ from utils.mol_utils import gen_mol, mols_to_smiles, load_smiles, canonicalize_s
 from moses.metrics.metrics import get_all_metrics
 import torch.nn.functional as F
 from utils.protos_utils import compute_protos_from
+from utils.graph_utils import node_flags
+
 
 # -------- 通用图生成任务的采样器 --------
-class Sampler(object):
+class mySampler(object):
     """
     使用预训练模型生成图的采样器类。
     """
+
     def __init__(self, config):
         """
         使用配置和设备初始化采样器。
@@ -45,7 +47,7 @@ class Sampler(object):
         super(Sampler, self).__init__()
 
         self.config = config
-        self.device = load_device(config) # 加载指定的设备（CPU 或 GPU）
+        self.device = load_device(config)  # 加载指定的设备（CPU 或 GPU）
 
     def sample(self, independent=True):
         """
@@ -72,8 +74,6 @@ class Sampler(object):
             self.config, self.ckpt_dict["params_adj"], self.ckpt_dict["adj_state_dict"]
         )
         # 分配测试原型并将其移动到设备
-        self.protos = protos_test
-        self.protos= self.protos.to(self.device)
 
         # -------- 初始化 WandB (可选) --------
         if independent:
@@ -101,9 +101,9 @@ class Sampler(object):
             manifold = self.model_x.manifold
         else:
             manifold = None
-        print("manifold:", manifold) # 打印正在使用的流形
+        # 打印正在使用的流形 # Removed debug print
         if manifold is not None:
-            print("k=:", manifold.k) # 如果流形存在，打印曲率
+            pass  # Removed debug print
 
         # -------- 加载数据和设置日志记录 --------
         # 从训练配置加载随机种子
@@ -122,8 +122,8 @@ class Sampler(object):
         # 检查日志文件是否存在，如果不存在，则写入初始日志信息
         if not check_log(self.log_folder_name, self.log_name):
             logger.log(f"{self.log_name}")
-            start_log(logger, self.configt) # 记录启动配置
-            train_log(logger, self.configt) # 记录训练配置详情
+            start_log(logger, self.configt)  # 记录启动配置
+            train_log(logger, self.configt)  # 记录训练配置详情
         # 记录采样特定配置
         sample_log(logger, self.config)
 
@@ -149,24 +149,26 @@ class Sampler(object):
         )
 
         # -------- 生成样本 --------
-        logger.log(f"GEN SEED: {self.config.sample.seed}") # 记录生成种子
+        logger.log(f"GEN SEED: {self.config.sample.seed}")  # 记录生成种子
         # 加载生成种子
-        load_seed(self.config.sample.seed) # 加载生成种子
+        load_seed(self.config.sample.seed)  # 加载生成种子
 
         # 根据批量大小计算所需的采样轮数
         num_sampling_rounds = math.ceil(len(self.test_graph_list) / self.configt.data.batch_size)
-        gen_graph_list = [] # 初始化列表以存储生成的图
+        gen_graph_list = []  # 初始化列表以存储生成的图
         # 循环进行采样轮次
         for r in range(num_sampling_rounds):
-            t_start = time.time() # 记录本轮开始时间
+            t_start = time.time()  # 记录本轮开始时间
 
             # 根据训练数据初始化标志（例如，节点计数）
             self.init_flags = init_flags(self.train_graph_list, self.configt).to(self.device)
 
             # 使用加载的函数和模型执行采样
-            x, adj = self.sampling_fn(self.model_x, self.model_adj, self.init_flags,None,self.protos)
+            x, adj = self.sampling_fn(
+                self.model_x, self.model_adj, self.init_flags, None, self.protos
+            )
 
-            logger.log(f"Round {r} : {time.time() - t_start:.2f}s") # 记录本轮耗时
+            logger.log(f"Round {r} : {time.time() - t_start:.2f}s")  # 记录本轮耗时
             # 量化生成的邻接矩阵
             samples_int = quantize(adj)
             # 将量化的邻接矩阵转换为图对象
@@ -174,7 +176,6 @@ class Sampler(object):
 
         # 修剪生成的列表以匹配测试集的大小
         gen_graph_list = gen_graph_list[: len(self.test_graph_list)]
-
 
         # -------- 评估 --------
         # 根据数据集名称加载评估方法和核函数
@@ -195,7 +196,7 @@ class Sampler(object):
             f"\n{self.config.saved_name}",
             verbose=False,
         )
-        logger.log("=" * 100) # 日志中的分隔线
+        logger.log("=" * 100)  # 日志中的分隔线
         # 如果独立运行，则将结果记录到 wandb
         if independent:
             wandb.log(result_dict, commit=True)
@@ -211,9 +212,9 @@ class Sampler(object):
         #                  save_dir=self.log_folder_name)
         plot_graphs_list(
             graphs=sample_graph_list,
-            title=f"snr={self.config.sampler.snr_x}_scale={self.config.sampler.scale_eps_x}.png", # 标题包含采样器参数
-            max_num=16, # 要绘制的最大图数
-            save_dir=self.log_folder_name, # 保存绘图的目录
+            title=f"snr={self.config.sampler.snr_x}_scale={self.config.sampler.scale_eps_x}.png",  # 标题包含采样器参数
+            max_num=16,  # 要绘制的最大图数
+            save_dir=self.log_folder_name,  # 保存绘图的目录
         )
         # 返回评估指标
         return {
@@ -224,87 +225,98 @@ class Sampler(object):
         }
 
 
-class MySampler(object):
+class Sampler(object):
     """
     使用预训练模型生成图的采样器类。
     """
-    def __init__(self, mode,config):
+
+    def __init__(self, mode, config):
         assert mode in {"ckpt", "mem"}, "mode 只能是 'ckpt' 或 'mem'"
-        
+
         self.config = config
         self.device = load_device(config)
-        # 从训练配置加载随机种子
-                # -------- 加载数据和设置日志记录 --------
-        # 从训练配置加载随机种子
-        load_seed(self.config.seed)
-        
-        # 设置采样日志目录和文件夹名称
-        self.log_folder_name, self.log_dir, _ = set_log(self.config, is_train=False)
-
-        # 定义日志文件名
-        self.log_name = f"{self.config.exp_name}-sample"
-        # 初始化日志记录器实例
-        logger = Logger(str(os.path.join(self.log_dir, f"{self.log_name}.log")), mode="a")
-
-        # 检查日志文件是否存在，如果不存在，则写入初始日志信息
-        if not check_log(self.log_folder_name, self.log_name):
-            logger.log(f"{self.log_name}")
-            start_log(logger, self.configt) # 记录启动配置
-            train_log(logger, self.configt) # 记录训练配置详情
-        # 记录采样特定配置
-        sample_log(logger, self.config)
 
         # ---------- score_ckpt 分支 ----------
         if mode == "ckpt":
-            score_ckpt = torch.load(config.score_ckpt_path, map_location=self.device,weights_only=False)
-            self.mx = load_model_from_ckpt(config, score_ckpt["params_x"],   score_ckpt["x_state_dict"])
-            self.ma = load_model_from_ckpt(config, score_ckpt["params_adj"], score_ckpt["adj_state_dict"])
-            if config.sample.use_ema: 
-                load_ema_from_ckpt(self.mx, score_ckpt["ema_x"],  config.train.ema).copy_to(self.mx.parameters())
-                load_ema_from_ckpt(self.ma, score_ckpt["ema_adj"], config.train.ema).copy_to(self.ma.parameters())
+            self.independent = True
+            score_ckpt = torch.load(
+                config.score_ckpt_path, map_location=self.device, weights_only=False
+            )
+            self.configt = ml_collections.ConfigDict(score_ckpt["model_config"])
+            self.mx = load_model_from_ckpt(
+                config, score_ckpt["params_x"], score_ckpt["x_state_dict"]
+            )
+            self.ma = load_model_from_ckpt(
+                config, score_ckpt["params_adj"], score_ckpt["adj_state_dict"]
+            )
+
+            if config.sample.use_ema:
+                load_ema_from_ckpt(self.mx, score_ckpt["ema_x"], self.configt.train.ema).copy_to(
+                    self.mx.parameters()
+                )
+                load_ema_from_ckpt(self.ma, score_ckpt["ema_adj"], self.configt.train.ema).copy_to(
+                    self.ma.parameters()
+                )
             for p in self.mx.parameters():
                 p.requires_grad = False
             for p in self.ma.parameters():
                 p.requires_grad = False
             self.mx.eval()
             self.ma.eval()
-                
-            # 评估对齐用同一份测试集
-            _, self.dataloader = load_data(config)
+            # 从训练配置加载随机种子
+            load_seed(self.configt.seed)
+            _, self.dataloader = load_data(self.configt, get_graph_list=False)
 
-            # 若需要 proto
-            self.protos = None
-            if config.sampler.get("cond_with_protos", False) and config.get("ae_ckpt_path"):
-                from models.HVAE import HVAE
-                ae_ckpt = torch.load(self.config.model.ae_path, map_location=self.config.device,weights_only=False)
-                AE_state_dict = ae_ckpt["ae_state_dict"]
-                AE_config = ml_collections.ConfigDict(ae_ckpt["model_config"])
-                ae = HVAE(AE_config)
-                ae.load_state_dict(AE_state_dict, strict=False)
-                for p in ae.encoder.parameters():
-                    p.requires_grad = False
-                self.encoder = ae.encoder.to(self.device).eval()
-                self.protos = compute_protos_from(self.encoder, self.dataloader, self.device)
-                del ae.decoder
-                if(type(self.mx.manifold!=type(self.encoder.manifold))):
-                    raise ValueError("模型流形不匹配")
-                else:
-                    self.manifold = self.encoder.manifold
+            ae_ckpt = torch.load(
+                self.config.ae_ckpt_path, map_location=self.config.device, weights_only=False
+            )
+            AE_state_dict = ae_ckpt["ae_state_dict"]
+            AE_config = ml_collections.ConfigDict(ae_ckpt["model_config"])
+            ae = HVAE(AE_config)
+            ae.load_state_dict(AE_state_dict, strict=False)
+            for p in ae.encoder.parameters():
+                p.requires_grad = False
+            self.encoder = ae.encoder.to(self.device).eval()
+            del ae.decoder
 
-            
+            self.protos = compute_protos_from(self.encoder, self.dataloader, self.device)
 
+            if type(self.mx.manifold) != type(self.encoder.manifold):
+                raise ValueError("模型流形不匹配")
+            else:
+                self.manifold = self.encoder.manifold
+                # 设置采样日志目录和文件夹名称
+            self.log_folder_name, self.log_dir, _ = set_log(self.config, is_train=False)
+            self.sampling_fn = load_sampling_fn(
+                self.configt, config.sampler, config.sample, self.device, self.manifold
+            )
+            # 定义日志文件名
+            self.log_name = f"{self.config.exp_name}-sample"
+            # 初始化日志记录器实例
+            self.logger = Logger(str(os.path.join(self.log_dir, f"{self.log_name}.log")), mode="a")
+
+            # 检查日志文件是否存在，如果不存在，则写入初始日志信息
+            if not check_log(self.log_folder_name, self.log_name):
+                self.logger.log(f"{self.log_name}")
+                start_log(self.logger, self.configt)  # 记录启动配置
+                train_log(self.logger, self.configt)  # 记录训练配置详情
+            # 记录采样特定配置
+            sample_log(self.logger, self.config)
         # ---------- mem 分支 ----------
-        else:   # mode == "mem"
-            self.mx     = config.model_x.to(self.device).eval()
-            self.ma     = config.model_adj.to(self.device).eval()
+        else:  # mode == "mem"
+            self.independent = False
+            self.mx = config.model_x.to(self.device).eval()
+            self.ma = config.model_adj.to(self.device).eval()
             self.encoder = config.encoder.to(self.device).eval()
-            self.dataloader= config.dataloader.to(self.device).eval()
-            self.protos =compute_protos_from(self.mx, self.dataloader,self.device)
+            self.dataloader = config.dataloader
+            self.protos = compute_protos_from(self.encoder, self.dataloader, self.device)
             self.manifold = self.mx.manifold
-            
-
-        # ---------- 共用初始化 ----------
-        self.sample_fn = load_sampling_fn(config, config.sampler, config.sample, self.device, self.manifold)
+            load_seed(self.config.sample.seed)
+            self.sampling_fn = load_sampling_fn(
+                config, config.sampler, config.sample, self.device, self.manifold
+            )
+            self.logger = config.logger
+            sample_log(self.logger, self.config)
 
     def sample(self, need_eval=True):
         """
@@ -314,51 +326,61 @@ class MySampler(object):
         Returns:
             dict or list: 评估指标 or 生成的图列表。
         """
-
+        if self.independent:
+            mode = "disabled"
+            if not self.config.wandb.no_wandb:
+                mode = "online" if self.config.wandb.online else "offline"
+            wandb.init(
+                project=self.config.wandb.project,
+                entity=self.config.wandb.entity,
+                name=self.config.run_name,
+                config=self.config.to_dict(),
+                settings=wandb.Settings(_disable_stats=True),
+                mode=mode,
+            )
         self.logger.log(f"GEN SEED: {self.config.sample.seed}")
-        load_seed(self.config.sample.seed)
-
-        glist = self.dataloader.dataset.graph_list if hasattr(self.dataloader.dataset, "graph_list") else self.dataloader.dataset
-        total_graphs = len(glist)
-        batch_size = self.config.data.batch_size
-        rounds = math.ceil(total_graphs / batch_size)
 
         gen_graph_list = []
-
+        graph_ref_list = []
         with torch.no_grad():  # 采样阶段禁用梯度计算
-            for r in range(rounds):
+            for r, batch in enumerate(self.dataloader):
+                x_real, adj_real, labels = load_batch(batch, self.device)
                 t_start = time.time()
 
-                # 这里每个batch随机从 graph_list 中采 batch_size 个
-                flags = init_flags(glist, self.config, batch_size=batch_size).to(self.device)
+                self.flags = node_flags(adj_real).to(self.device)
 
-                # 采样
-                x_gen, adj_gen = self.sample_fn(
-                    self.mx, self.ma,
-                    flags,
-                    None,
-                    self.protos.to(self.device) if self.protos is not None else None
-                )
+                x_gen, adj_gen = self.sampling_fn(self.mx, self.ma, self.flags,labels, self.protos)
 
-                self.logger.log(f"Batch {r}: {time.time() - t_start:.2f}s")
+                self.logger.log(f"Round {r} : {time.time() - t_start:.2f}s")
 
-                # 转为graph
+                # 保存生成的图
                 samples_int = quantize(adj_gen)
-                gen_graph_list.extend(adjs_to_graphs(samples_int, is_sym=True))
+                gen_graph_list.extend(adjs_to_graphs(samples_int, is_discrete=True))
 
-        # 截断，只取和测试集一样多的数量
-        gen_graph_list = gen_graph_list[:total_graphs]
+                # 保存真实的图
+                adjs_real_int = quantize(adj_real)
+                graph_ref_list.extend(adjs_to_graphs(adjs_real_int, is_discrete=True))
 
         # 只采样，不评估
         if not need_eval:
             return gen_graph_list
 
         # --------- 评估 ---------
-        methods, kernels = load_eval_settings(self.config.data.name)
-        result_dict = eval_graph_list(glist, gen_graph_list, methods=methods, kernels=kernels)
-        result_dict["mean"] = (result_dict["degree"] + result_dict["cluster"] + result_dict["orbit"]) / 3
-
-        self.logger.log(f"MMD_full {result_dict}")
+        methods, kernels = load_eval_settings(self.config.data.data)
+        result_dict = eval_graph_list(
+            graph_ref_list, gen_graph_list, methods=methods, kernels=kernels
+        )
+        result_dict["mean"] = (
+            result_dict["degree"] + result_dict["cluster"] + result_dict["orbit"]
+        ) / 3
+        self.logger.log(
+            f"MMD_full {result_dict}"
+            f"\n{self.config.sampler.predictor}-{self.config.sampler.corrector}-"
+            f"X:{self.config.sampler.snr_x}-{self.config.sampler.scale_eps_x} A:{self.config.sampler.snr_A}-{self.config.sampler.scale_eps_A}"
+            f"\n{self.config.saved_name}",
+            verbose=False,
+        )
         self.logger.log("=" * 100)
-
+        if self.independent:
+            wandb.log(result_dict, commit=True)
         return result_dict
