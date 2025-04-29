@@ -347,9 +347,11 @@ class Sampler(object):
                 x_real, adj_real, labels = load_batch(batch, self.device)
                 t_start = time.time()
 
-                self.flags = node_flags(adj_real).to(self.device)
+                current_batch_size = adj_real.shape[0]   # 直接取当前batch大小
+                shape_x = (current_batch_size, self.config.data.max_node_num, self.config.data.max_feat_num)
+                shape_adj = (current_batch_size, self.config.data.max_node_num, self.config.data.max_node_num)
 
-                x_gen, adj_gen = self.sampling_fn(self.mx, self.ma, self.flags,labels, self.protos)
+                x_gen, adj_gen = self.sampling_fn(self.mx, self.ma,shape_x, shape_adj, labels, self.protos)
 
                 self.logger.log(f"Round {r} : {time.time() - t_start:.2f}s")
 

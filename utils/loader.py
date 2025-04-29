@@ -187,23 +187,26 @@ def load_loss_fn(config,manifold=None, encoder=None):
     return loss_fn
 
 
-def load_sampling_fn(config_train, config_module, config_sample, device, manifold, batch_size=None):
-    if batch_size is None:
-        batch_size = 10000
+def load_sampling_fn(config_train, config_module, config_sample, device, manifold):
+    """
+    构建采样函数。
+    Args:
+        config_train: 训练相关配置，包含SDE参数。
+        config_module: 采样模块配置，包含predictor/corrector等。
+        config_sample: 采样参数配置，包含采样细节如probability_flow、noise_removal等。
+        device: 设备（如'cpu'或'cuda'）。
+        manifold: 流形对象。
+    Returns:
+        sampling_fn: 采样函数。
+    """
+    # 加载特征和邻接矩阵的SDE
     sde_x = load_sde(config_train.sde.x, manifold)
     sde_adj = load_sde(config_train.sde.adj)
-    max_node_num = config_train.data.max_node_num
 
-    get_sampler = get_pc_sampler
-
-    shape_x = (config_train.data.batch_size, max_node_num, config_train.data.max_feat_num)
-    shape_adj = (config_train.data.batch_size, max_node_num, max_node_num)
-    
-    sampling_fn = get_sampler(
+    # 构建采样函数
+    sampling_fn =  get_pc_sampler(
         sde_x=sde_x,
         sde_adj=sde_adj,
-        shape_x=shape_x,
-        shape_adj=shape_adj,
         device=device,
         predictor=config_module.predictor,
         corrector=config_module.corrector,

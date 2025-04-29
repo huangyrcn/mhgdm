@@ -25,10 +25,10 @@ sampler:
   corrector: Langevin
   n_steps: 1
   predictor: Euler
-  scale_eps_A: '1.0'
-  scale_eps_x: '1.0'
-  snr_A: '0.25'
-  snr_x: '0.25'
+  scale_eps_A: 1.0
+  scale_eps_x: 1.0
+  snr_A: 0.25
+  snr_x: 0.25
   proto_guide: true
   
 ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth

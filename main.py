@@ -7,7 +7,7 @@ import ml_collections
 import os
 
 
-@hydra.main(config_path="configs", config_name="config", version_base="1.3")
+@hydra.main(config_path="configs", config_name="config_sample", version_base="1.3")
 def main(cfg: DictConfig):
     """
     主函数，根据实验名称中的关键词运行指定的训练/采样任务。

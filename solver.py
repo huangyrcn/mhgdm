@@ -11,7 +11,7 @@ from utils.manifolds_utils import (
     mobius_sub,
     mobius_add,
 )
-from utils.graph_utils import mask_adjs, mask_x, gen_noise
+from utils.graph_utils import mask_adjs, mask_x, gen_noise, node_flags
 from utils.sde_lib import VPSDE, subVPSDE
 
 import sys
@@ -118,6 +118,7 @@ class NoneCorrector(Corrector):
     """一个空的校正器，什么也不做。"""
 
     def __init__(self, obj, sde, score_fn, snr, scale_eps, n_steps):
+        super().__init__(sde, score_fn, snr, scale_eps, n_steps)
         self.obj = obj
         pass
 
@@ -145,9 +146,12 @@ class LangevinCorrector(Corrector):
         target_snr = self.snr
         seps = self.scale_eps
         m = sde.manifold
+
         if isinstance(sde, VPSDE) or isinstance(sde, subVPSDE):
-            timestep = (t * (sde.N - 1) / sde.T).long()
-            alpha = sde.alphas.to(t.device)[timestep]
+            timestep = (t * (sde.N - 1) / sde.T).long()  # (200,1,1)
+            flat_timestep = timestep.view(-1)            # (200)
+            alpha = sde.alphas.to(t.device).index_select(0, flat_timestep)  # (200)
+            alpha = alpha.view(t.shape)  # reshape回 (200,1,1)
         else:
             alpha = torch.ones_like(t)
 
@@ -189,8 +193,6 @@ class LangevinCorrector(Corrector):
 def get_pc_sampler(
     sde_x, # x 的 SDE
     sde_adj, # adj 的 SDE
-    shape_x, # x 的形状
-    shape_adj, # adj 的形状
     device, # 设备 (CPU/GPU)
     predictor="Euler", # 预测器类型 ("Euler" 或 "Reverse")
     corrector="None", # 校正器类型 ("Langevin" 或 "None")
@@ -201,7 +203,7 @@ def get_pc_sampler(
     config_module=None, # 配置模块
 ):
 
-    def pc_sampler(model_x, model_adj, init_flags,labels, protos=None):
+    def pc_sampler(model_x, model_adj, shape_x,shape_adj,labels, protos=None):
         # 获取配置参数
         n_steps = config_module.n_steps # 校正器步数
         snr_x = config_module.snr_x # x 的信噪比
@@ -233,7 +235,7 @@ def get_pc_sampler(
             x = sde_x.prior_sampling(shape_x).to(device) # 从先验分布采样 x
             adj = sde_adj.prior_sampling_sym(shape_adj).to(device) # 从先验分布采样 adj (对称)
             
-            flags = init_flags # 获取标志位
+            flags = node_flags(adj) # 获取标志位
             x = mask_x(x, flags) # 根据标志位掩码 x
             adj = mask_adjs(adj, flags) # 根据标志位掩码 adj
             diff_steps = sde_adj.N # 获取扩散步数
