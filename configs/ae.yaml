@@ -1,6 +1,6 @@
 # configs/ae.yaml
 defaults:
-  - data : Reddit
+  - data : ENZYMES
   - fsl_task : 10shot
   - model : ae
   - train : train_score
@@ -11,7 +11,7 @@ defaults:
 exp_name: "${model.model_type}_model_train"
 timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
-
+debug: false
 data:
   batch_size: 256
 

@@ -36,27 +36,22 @@ class Logger:
 
 
 def set_log(config, is_train=True):
-
     data = config.data.name
     exp_name = config.exp_name
 
-    log_folder_name = os.path.join(*[data, exp_name])
-    root = "logs_train" if is_train else "logs_sample"
-    if not (os.path.isdir(f"./{root}/{log_folder_name}")):
-        try:
-            os.makedirs(os.path.join(f"./{root}/{log_folder_name}"))
-        except:
-            pass
-    log_dir = os.path.join(f"./{root}/{log_folder_name}/")
+    # logs/train/... 或 logs/sample/...
+    mode_folder = "train" if is_train else "sample"
+    log_folder_name = os.path.join("logs", mode_folder, data, exp_name)
+    ckpt_folder_name = os.path.join("checkpoints", data, exp_name)
 
-    if not (os.path.isdir(f"./checkpoints/{data}/{exp_name}")) and is_train:
-        os.makedirs(os.path.join(f"./checkpoints/{data}/{exp_name}"))
-    ckpt_dir = os.path.join(f"./checkpoints/{data}/{exp_name}/")
+    os.makedirs(log_folder_name, exist_ok=True)
+    if is_train:
+        os.makedirs(ckpt_folder_name, exist_ok=True)
 
     print("-" * 100)
-    print("Make Directory {} in Logs".format(log_folder_name))
+    print(f"Make Directory {log_folder_name} in Logs")
 
-    return log_folder_name, log_dir, ckpt_dir
+    return log_folder_name, log_folder_name, ckpt_folder_name
 
 
 def check_log(log_folder_name, log_name):

@@ -1,17 +1,24 @@
-# 忽略 datasets 目录下的所有 .pkl 文件
+# 忽略 datasets 下所有 .pkl 文件
 datasets/**/*.pkl
 
+# 忽略 checkpoints 中以 epoch 开头的 .pth 文件
+checkpoints/**/epoch*.pth
+checkpoints/running/
+# 忽略所有日志输出
+*.log
+*.out
 
-# 忽略 checkpoints 目录中所有子目录下以 epoch 开头的文件
-checkpoints/**/epoch*
-
-logs/
-
+# 忽略所有 __pycache__ 和 pyc 文件
 __pycache__/
 *.py[cod]
 *.so
 
+# 忽略 logs 目录（包括 logs_train logs_sample）
 logs/
+logs_train/
+logs_sample/
 
-*.log
-*.out
+# 忽略 wandb 日志（建议放到 logs 目录）
+wandb/
+
+/configs/running/*.yaml

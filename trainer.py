@@ -40,8 +40,7 @@ class Trainer(object):
         ts = self.config.timestamp
 
         mode = "disabled"
-        if not self.config.wandb.no_wandb:
-            mode = "online" if self.config.wandb.online else "offline"
+        if not self.config.debug: mode = "online" if self.config.wandb.online else "offline"
         wandb.init(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
@@ -49,6 +48,7 @@ class Trainer(object):
             config=self.config.to_dict(),
             settings=wandb.Settings(_disable_stats=True),
             mode=mode,
+            dir=os.path.join("logs", "wandb")  # 👈 将 wandb 日志写入 logs/wandb 目录
         )
 
         print("\033[91m" + f"{self.run_name}" + "\033[0m")
@@ -169,6 +169,7 @@ class Trainer(object):
 
             wandb.log(
                 {
+                    "epoch": epoch,
                     "total_test_loss": mean_total_test_loss,
                     "total_train_loss": mean_total_train_loss,
                     "test_edge_loss": mean_test_edge_loss,
@@ -216,8 +217,7 @@ class Trainer(object):
 
         # -------- wandb --------
         mode = "disabled"
-        if not self.config.wandb.no_wandb:
-            mode = "online" if self.config.wandb.online else "offline"
+        if not self.config.debug: mode = "online" if self.config.wandb.online else "offline"
         wandb.init(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
@@ -225,6 +225,7 @@ class Trainer(object):
             config=self.config.to_dict(),
             settings=wandb.Settings(_disable_stats=True),
             mode=mode,
+            dir=os.path.join("logs", "wandb")  # 👈 将 wandb 日志写入 logs/wandb 目录
         )
 
         
@@ -355,7 +356,8 @@ class Trainer(object):
                     verbose=False,
                 )
                 wandb.log(
-                    {
+                    {   
+                        "epoch": epoch,
                         "Test x": mean_test_x,
                         "test adj": mean_test_adj,
                         "train x": mean_train_x,
@@ -416,7 +418,7 @@ class Trainer(object):
             
             # endreigon
             # region -------- Print losses --------
-            # if epoch % self.config.train.print_interval == self.config.train.print_interval - 1:
+            # if epoch % self.config.train.print_interval == self.confiffg.train.print_interval - 1:
             #     tqdm.write(
             #         f"[EPOCH {epoch+1:04d}] test adj: {mean_test_adj:.3e} | train adj: {mean_train_adj:.3e} | "
             #         f"test x: {mean_test_x:.3e} | train x: {mean_train_x:.3e}"
@@ -582,7 +584,7 @@ class Trainer(object):
 
             # Log results (e.g., to wandb or logger)
             if not self.config.wandb.no_wandb:
-                 wandb.log({
+                 wandb.log({ 
                      "meta_test_mean_accuracy": mean_accuracy,
                      "meta_test_std_accuracy": std_accuracy,
                      "meta_test_confidence_interval": confidence_interval

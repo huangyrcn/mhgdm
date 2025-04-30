@@ -1,7 +1,7 @@
 # configs/ae.yaml
 defaults:
   - _self_
-  - data : Reddit
+  - data : ENZYMES
   - fsl_task : 10shot
   - model : ae
   - model/x: poincare # 指定编码器
