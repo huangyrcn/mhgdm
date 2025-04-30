@@ -1,0 +1,3 @@
+# 忽略 datasets 目录下的所有 .pkl 文件
+datasets/**/*.pkl
+
