@@ -1,3 +1,17 @@
 # 忽略 datasets 目录下的所有 .pkl 文件
 datasets/**/*.pkl
 
+
+# 忽略 checkpoints 目录中所有子目录下以 epoch 开头的文件
+checkpoints/**/epoch*
+
+logs/
+
+__pycache__/
+*.py[cod]
+*.so
+
+logs/
+
+*.log
+*.out
