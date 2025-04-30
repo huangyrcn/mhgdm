@@ -434,3 +434,164 @@ class Trainer(object):
         # 并最终在查询集上评估分类性能
         print("Meta-testing...")
 
+        # -------- Load Pre-trained Models (Score Network and optional AE) --------
+        if self.config.model.ae_path is None:
+            Encoder = None
+            self.manifold = get_manifold(self.config.model.manifold, self.config.model.c)
+        else:
+            checkpoint_ae = torch.load(self.config.model.ae_path, map_location=self.config.device, weights_only=False)
+            AE_config = ml_collections.ConfigDict(checkpoint_ae["model_config"])
+            AE_config.model.dropout = 0 # Ensure dropout is off during inference/testing
+            ae = HVAE(AE_config)
+            ae.load_state_dict(checkpoint_ae["ae_state_dict"], strict=False)
+            ae.eval() # Set AE to evaluation mode
+            for param in ae.parameters():
+                param.requires_grad = False # Freeze AE parameters
+            Encoder = ae.encoder.to(self.device)
+            self.manifold = Encoder.manifold
+            print(f"Loaded AE from: {self.config.model.ae_path}")
+
+
+        # -------- Load FSL Data --------
+        # Assuming load_data can handle FSL task setup or a new loader is needed
+        # For now, let's assume test_loader provides meta-test tasks
+        # Each batch in test_loader could represent one task (support + query)
+        # Or, we might need a dedicated FSL dataloader.
+        # Let's proceed assuming test_loader yields tasks.
+        _, self.meta_test_loader = load_data(self.config, fsl_task=True) # Modify load_data or use a specific FSL loader
+
+        # -------- Meta-Testing Loop --------
+        all_task_accuracies = []
+        num_tasks = len(self.meta_test_loader) # Or specify number of tasks in config
+
+        for task_idx, task_data in enumerate(self.meta_test_loader):
+            print(f"--- Processing Meta-Test Task {task_idx + 1}/{num_tasks} ---")
+
+            # 1. Split task data into support and query sets
+            # This depends heavily on how the FSL dataloader structures the data.
+            # Example structure: task_data = (support_x, support_adj, support_y, query_x, query_adj, query_y)
+            # Adjust based on your actual FSL data loading implementation.
+            # For demonstration, let's assume a function `split_support_query` exists.
+            # support_x, support_adj, support_y, query_x, query_adj, query_y = split_support_query(task_data, self.config.fsl.n_way, self.config.fsl.k_shot, self.config.fsl.k_query, self.device)
+            
+            # Placeholder: Assuming task_data is already structured or needs specific handling
+            # Example: Directly load support and query data if loader provides it separately per iteration
+            support_x, support_adj, support_labels = load_batch(task_data['support'], self.device) # Adjust based on actual loader output
+            query_x, query_adj, query_labels = load_batch(task_data['query'], self.device)       # Adjust based on actual loader output
+            
+            print(f"Support set size: {support_x.shape[0]}, Query set size: {query_x.shape[0]}")
+
+            # 2. Compute prototypes from the support set using the Encoder
+            if Encoder is not None:
+                with torch.no_grad():
+                    support_z, _ = Encoder(support_x, support_adj) # Get latent representations
+                    # Compute prototypes (e.g., mean of embeddings per class)
+                    # This requires knowing the class labels (`support_labels`)
+                    # Example:
+                    # unique_labels = torch.unique(support_labels)
+                    # support_protos = torch.stack([support_z[support_labels == label].mean(dim=0) for label in unique_labels])
+                    # print(f"Computed {len(unique_labels)} prototypes from support set.")
+                    
+                    # Placeholder for actual prototype computation logic
+                    support_protos = compute_protos_from(Encoder, [(support_x, support_adj, support_labels)], self.device) # Adapt compute_protos_from if needed
+                    print(f"Computed prototypes from support set. Shape: {support_protos.shape}")
+
+            else:
+                print("Warning: No AE Encoder provided, cannot compute latent prototypes.")
+                support_protos = None # Or handle differently if no AE is used
+
+            # 3. Generate augmented support set based on prototypes (Optional)
+            # This step involves using the loaded Score Network (model_x, model_adj)
+            # and the computed prototypes to guide the generation process.
+            # You would need to adapt the Sampler class or create a specific generation function.
+            # Example call (conceptual):
+            # sampler = Sampler(self.config, self.model_x, self.model_adj, self.manifold, Encoder) # Pass necessary models
+            # augmented_x, augmented_adj, augmented_labels = sampler.sample_conditional(
+            #     num_samples_per_class=self.config.fsl.augmentation_samples,
+            #     prototypes=support_protos,
+            #     class_labels=unique_labels # Need the labels corresponding to protos
+            # )
+            # print(f"Generated {augmented_x.shape[0]} augmented samples.")
+
+            # Combine original support set with augmented data
+            # combined_support_x = torch.cat([support_x, augmented_x], dim=0)
+            # combined_support_adj = torch.cat([support_adj, augmented_adj], dim=0) # Check adjacency matrix combination logic
+            # combined_support_labels = torch.cat([support_labels, augmented_labels], dim=0)
+            # print(f"Combined support set size: {combined_support_x.shape[0]}")
+            
+            # For now, skipping augmentation and using original support set for fine-tuning
+            combined_support_x, combined_support_adj, combined_support_labels = support_x, support_adj, support_labels
+
+
+            # 4. Fine-tune/Train a classifier on the (augmented) support set
+            # Define a simple classifier (e.g., Logistic Regression, MLP, or prototype-based)
+            # Train this classifier using `combined_support_x/adj/labels` (or their latent embeddings `support_z`)
+            
+            # Example: Using latent embeddings `support_z` and a simple classifier
+            if Encoder is not None:
+                with torch.no_grad():
+                     combined_support_z, _ = Encoder(combined_support_x, combined_support_adj)
+                     query_z, _ = Encoder(query_x, query_adj)
+
+                # Define classifier (e.g., Logistic Regression on latent space)
+                classifier = torch.nn.Linear(combined_support_z.size(-1), self.config.fsl.n_way).to(self.device) # n_way classification
+                classifier_optimizer = torch.optim.Adam(classifier.parameters(), lr=self.config.fsl.classifier_lr)
+                loss_fn_classifier = torch.nn.CrossEntropyLoss()
+
+                print("Fine-tuning classifier...")
+                classifier.train()
+                for ft_epoch in range(self.config.fsl.classifier_epochs):
+                    classifier_optimizer.zero_grad()
+                    logits = classifier(combined_support_z)
+                    # Need to map original labels to 0..N-1 for CrossEntropyLoss
+                    # Assuming labels are already in this range or a mapping is applied
+                    loss = loss_fn_classifier(logits, combined_support_labels)
+                    loss.backward()
+                    classifier_optimizer.step()
+                    if (ft_epoch + 1) % 10 == 0: # Print progress occasionally
+                         print(f"  Classifier Fine-tune Epoch {ft_epoch+1}, Loss: {loss.item():.4f}")
+
+                # 5. Evaluate the classifier on the query set
+                print("Evaluating on query set...")
+                classifier.eval()
+                with torch.no_grad():
+                    query_logits = classifier(query_z)
+                    predictions = torch.argmax(query_logits, dim=1)
+                    # Map query_labels similarly if needed
+                    correct = (predictions == query_labels).sum().item()
+                    accuracy = correct / len(query_labels)
+                    all_task_accuracies.append(accuracy)
+                    print(f"Task {task_idx + 1} Accuracy: {accuracy:.4f}")
+
+            else:
+                 print("Skipping classifier training/evaluation as no Encoder is available.")
+                 # Handle evaluation differently if working directly in graph space
+
+
+        # -------- Final Results --------
+        if all_task_accuracies:
+            mean_accuracy = np.mean(all_task_accuracies)
+            std_accuracy = np.std(all_task_accuracies)
+            confidence_interval = 1.96 * std_accuracy / np.sqrt(len(all_task_accuracies)) # 95% CI
+
+            print("\n--- Meta-Testing Summary ---")
+            print(f"Number of tasks evaluated: {len(all_task_accuracies)}")
+            print(f"Mean Accuracy: {mean_accuracy:.4f}")
+            print(f"Standard Deviation: {std_accuracy:.4f}")
+            print(f"95% Confidence Interval: +/- {confidence_interval:.4f}")
+
+            # Log results (e.g., to wandb or logger)
+            if not self.config.wandb.no_wandb:
+                 wandb.log({
+                     "meta_test_mean_accuracy": mean_accuracy,
+                     "meta_test_std_accuracy": std_accuracy,
+                     "meta_test_confidence_interval": confidence_interval
+                 })
+        else:
+            print("\n--- Meta-Testing Summary ---")
+            print("No tasks were successfully evaluated.")
+
+        print("Meta-testing finished.")
+        # Potentially return results or save them
+        return {"mean_accuracy": mean_accuracy, "std_accuracy": std_accuracy} if all_task_accuracies else {}
+

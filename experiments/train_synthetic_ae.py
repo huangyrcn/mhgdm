@@ -3,7 +3,7 @@ import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent.resolve()))
 
 import yaml
-from trainer import Trainer
+from trainer.trainer import Trainer
 import yaml
 import ml_collections
 

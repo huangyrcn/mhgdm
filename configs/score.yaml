@@ -1,11 +1,11 @@
-# configs/config.yaml
+# configs/ae.yaml
 defaults:
   - _self_
-  - data : ENZYMES
+  - data : Reddit
   - fsl_task : 10shot
-  - model : score
-  - model/x: poincare_proto  # 指定编码器
-  - model/adj: poincare_proto  # 指定解码器
+  - model : ae
+  - model/x: poincare # 指定编码器
+  - model/adj: poincare # 指定解码器
   - train : train_score
 
 
