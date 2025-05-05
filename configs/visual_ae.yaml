@@ -2,21 +2,22 @@
 defaults:
   - data : ENZYMES
   - fsl_task : 10shot
-  - model : score
-  - model/x: poincare # 指定编码器
-  - model/adj: poincare # 指定解码器
+  - model : ae
   - train : train_score
   - _self_
 
 
-
 # 实验配置
-exp_name: "${model.model_type}_model_train"
+exp_name: "visal"
 timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
 
-debug: false
+ckpt_path: checkpoints/ENZYMES/ae_model_train/20250430_131837/best.pth
+save_dir: checkpoints/ENZYMES/ae_model_train/20250430_131837
 
+debug: false
+data:
+  batch_size: 256
 
 seed: 4
 device: auto
@@ -62,12 +63,12 @@ train:
   kl_regularization: 1.0e-05
   edge_weight: 1.0e-02
   proto_weight: 1.0e-02
-  lr: 1e-2
+  lr: 0.01
   lr_decay: 0.999
   lr_schedule: true
-  num_epochs: 5000
-  print_interval: 10
+  num_epochs: 1000
+  print_interval: 50
   reduce_mean: true
-  save_interval: 100
-  weight_decay: 1e-04
+  save_interval: 50
+  weight_decay: 0.0001
   

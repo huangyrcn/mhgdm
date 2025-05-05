@@ -135,7 +135,7 @@ class Sampler(object):
         """
         if self.independent:
             mode = "disabled"
-            if not self.config.wandb.no_wandb:
+            if not self.config.debug:
                 mode = "online" if self.config.wandb.online else "offline"
             wandb.init(
                 project=self.config.wandb.project,
@@ -164,31 +164,33 @@ class Sampler(object):
 
                 # 保存生成的图
                 samples_int = quantize(adj_gen)
-                gen_graph_list.extend(adjs_to_graphs(samples_int, is_discrete=True))
+                gen_graph_list.extend(adjs_to_graphs(samples_int, True))
 
                 # 保存真实的图
                 adjs_real_int = quantize(adj_real)
-                graph_ref_list.extend(adjs_to_graphs(adjs_real_int, is_discrete=True))
+                graph_ref_list.extend(adjs_to_graphs(adjs_real_int,True))
 
         # 只采样，不评估
         if not need_eval:
             return gen_graph_list
 
         # --------- 评估 ---------
-        methods, kernels = load_eval_settings(self.config.data.data)
+        methods, kernels = load_eval_settings()
         result_dict = eval_graph_list(
             graph_ref_list, gen_graph_list, methods=methods, kernels=kernels
         )
         result_dict["mean"] = (
             result_dict["degree"] + result_dict["cluster"] + result_dict["orbit"]
         ) / 3
+        print(result_dict)
         self.logger.log(
             f"MMD_full {result_dict}"
             f"\n{self.config.sampler.predictor}-{self.config.sampler.corrector}-"
             f"X:{self.config.sampler.snr_x}-{self.config.sampler.scale_eps_x} A:{self.config.sampler.snr_A}-{self.config.sampler.scale_eps_A}"
-            f"\n{self.config.saved_name}",
+            f"\n{self.config.run_name}",
             verbose=False,
         )
+
         self.logger.log("=" * 100)
         if self.independent:
             wandb.log(result_dict, commit=True)

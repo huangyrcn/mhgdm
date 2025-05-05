@@ -14,7 +14,8 @@ run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
 debug: false
 data:
   batch_size: 256
-
+model:
+  use_proto_loss: true
 seed: 4
 device: auto
 device_count: 1

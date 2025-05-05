@@ -16,6 +16,7 @@ def main(cfg: DictConfig):
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     cfg_dict = ml_collections.ConfigDict(cfg_dict)
     
+
     running_dir = os.path.join("configs", "running")
     os.makedirs(running_dir, exist_ok=True)
 
@@ -33,10 +34,9 @@ def main(cfg: DictConfig):
     elif "fsl" in exp_name:
         trainer = Trainer(cfg_dict) # Trainer initialization remains the same
         trainer.train_fsl()
-    elif "sample" in exp_name:
-      
-        sampler= Sampler(cfg_dict) 
-        sampler.sample() 
+    elif "sample" in exp_name: 
+        sampler= Sampler("ckpt",cfg_dict) 
+        sampler.sample(True) 
     else:
         raise ValueError(f"Unknown experiment type in name: {cfg.exp_name}. "
                         f"Name should contain one of: ae, score, fsl, sample")

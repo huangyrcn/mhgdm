@@ -8,9 +8,7 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": [
-                "debug=true",
-            ]
+            "args": ["debug=true"],
         }
     ]
 }
