@@ -4,4 +4,4 @@ depth: 5
 nhid: 32
 manifold: Lorentz
 edge_dim: 1
-GCN_type: HGAT 
+GCN_type: HGCN 

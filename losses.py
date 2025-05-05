@@ -174,6 +174,7 @@ def get_sde_loss_fn(
                     
                     # 计算目标分数（对数概率密度的梯度）
                     (target,) = torch.autograd.grad(logp.sum(), xt)
+                    
                     target = mask_x(target, flags) # 应用节点掩码
                 # 计算分数和目标之间的平方误差
                 losses_x = torch.square(score_x - target)
