@@ -1,5 +1,5 @@
 model_type: score
-ae_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth
+ae_path: checkpoints/ENZYMES/ae_model_train/20250430_103446/best.pth
 adj: adj_poincare
 x: x_poincare
 GCN_type: HGAT

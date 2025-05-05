@@ -369,7 +369,7 @@ def load_model_from_ckpt(config, params, state_dict):
     return model
 
 
-def load_eval_settings(data, orbit_on=True):
+def load_eval_settings():
     # Settings for generic graph generation
     methods = ["degree", "cluster", "orbit", "spectral"]
     kernels = {

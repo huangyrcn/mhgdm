@@ -1,18 +1,19 @@
 # configs/config.yaml
 defaults:
-  - _self_
   - data : ENZYMES
   - fsl_task : 10shot
-
   - train : sample
-
+  - _self_
 
 
 # 实验配置
 exp_name: "sample"
 timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
+debug: false
 
+data:
+  batch_size: 512
 
 sample:
   eps: 0.0001
@@ -31,8 +32,8 @@ sampler:
   snr_x: 0.25
   proto_guide: true
   
-ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250428_040034/best.pth
-score_ckpt_path: checkpoints/ENZYMES/score_model_train/20250429_002445/best.pth
+ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250430_103446/best.pth
+score_ckpt_path: checkpoints/ENZYMES/score_model_train/20250430_111444/best.pth
 
 
 

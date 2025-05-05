@@ -64,7 +64,7 @@ class HVAE(nn.Module):
         kl = posterior.kl()
 
         loss = self.loss_fn(type_pred * node_mask, x)
-
+        loss_proto = torch.tensor(0, device=x.device) 
         if self.config.model.use_proto_loss:
             mean = posterior.mode()
             if mean.dim() == 3 and mean.size(1) == 1:
