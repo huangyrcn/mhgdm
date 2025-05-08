@@ -1,10 +1,9 @@
 # configs/ae.yaml
 defaults:
   - data : ENZYMES
-  - fsl_task : 10shot
   - model : score
-  - model/x: poincare # 指定编码器
-  - model/adj: poincare # 指定解码器
+  - model/x: poincare_proto # 指定编码器
+  - model/adj: poincare_proto # 指定解码器
   - train : train_score
   - _self_
 
@@ -17,6 +16,8 @@ run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
 
 debug: false
 
+data:
+  batch_size: 200
 
 seed: 4
 device: auto

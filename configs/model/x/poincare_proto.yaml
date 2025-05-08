@@ -4,7 +4,7 @@ depth: 5
 nhid: 32
 manifold: Lorentz
 edge_dim: 1
-GCN_type: HGAT
+GCN_type: HGCN
 num_heads: 4
 dropout: 0.0
 use_norm: ln

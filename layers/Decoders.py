@@ -5,6 +5,7 @@ from torch.nn import init
 from layers.hyp_layers import HGCLayer, get_dim_act_curv, HGATLayer
 from layers.layers import GCLayer, get_dim_act, GATLayer
 from layers.CentroidDistance import CentroidDistance
+from torch.nn import functional as F
 
 
 class Decoder(nn.Module):
@@ -20,10 +21,27 @@ class Decoder(nn.Module):
             nn.Linear(config.model.hidden_dim, config.data.max_feat_num),
         )
 
-    def forward(self, h, adj,node_mask):
-        output = self.decode(h,adj)
-        type_pred = self.out(output)*node_mask
+    def forward(self, h, adj, node_mask):
+        output = self.decode(h, adj)
+        type_pred = self.out(output) * node_mask
         return type_pred
+
+
+# Define a 3-layer classifier directly
+class Classifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(Classifier, self).__init__()
+        # Define the layers
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        # Forward pass through each layer with ReLU activations
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
 
 class GCN(Decoder):
@@ -36,9 +54,9 @@ class GCN(Decoder):
         dims, acts = get_dim_act(config, config.model.dec_layers, enc=False)
         self.manifolds = None
         gc_layers = []
-        if config.model.layer_type == 'GCN':
+        if config.model.layer_type == "GCN":
             layer_type = GCLayer
-        elif config.model.layer_type == 'GAT':
+        elif config.model.layer_type == "GAT":
             layer_type = GATLayer
         else:
             raise AttributeError
@@ -47,16 +65,23 @@ class GCN(Decoder):
             act = acts[i]
             gc_layers.append(
                 layer_type(
-                    in_dim, out_dim, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.aggregation_method, config.model.msg_transform
+                    in_dim,
+                    out_dim,
+                    config.model.dropout,
+                    act,
+                    config.model.edge_dim,
+                    config.model.normalization_factor,
+                    config.model.aggregation_method,
+                    config.model.aggregation_method,
+                    config.model.msg_transform,
                 )
             )
         self.layers = nn.Sequential(*gc_layers)
         self.message_passing = True
 
-    def decode(self, x,adj):
-        return self.layers((x,adj))[0]
+    def decode(self, x, adj):
+        return self.layers((x, adj))[0]
+
 
 class HGCN(Decoder):
     """
@@ -70,9 +95,9 @@ class HGCN(Decoder):
             self.manifolds[0] = manifold
         self.manifold = self.manifolds[-1]
         hgc_layers = []
-        if config.model.layer_type == 'HGCN':
+        if config.model.layer_type == "HGCN":
             layer_type = HGCLayer
-        elif config.model.layer_type == 'HGAT':
+        elif config.model.layer_type == "HGAT":
             layer_type = HGATLayer
         else:
             raise AttributeError
@@ -82,23 +107,35 @@ class HGCN(Decoder):
             act = acts[i]
             hgc_layers.append(
                 layer_type(
-                    in_dim, out_dim, m_in, m_out, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.msg_transform, config.model.sum_transform, config.model.use_norm
+                    in_dim,
+                    out_dim,
+                    m_in,
+                    m_out,
+                    config.model.dropout,
+                    act,
+                    config.model.edge_dim,
+                    config.model.normalization_factor,
+                    config.model.aggregation_method,
+                    config.model.msg_transform,
+                    config.model.sum_transform,
+                    config.model.use_norm,
                 )
             )
         if config.model.use_centroid:
-            self.centroid = CentroidDistance(dims[-1], dims[-1], self.manifold, config.model.dropout)
+            self.centroid = CentroidDistance(
+                dims[-1], dims[-1], self.manifold, config.model.dropout
+            )
         self.layers = nn.Sequential(*hgc_layers)
         self.message_passing = True
 
     def decode(self, x, adj):
-        output,_ = self.layers((x,adj))
+        output, _ = self.layers((x, adj))
         if self.config.model.use_centroid:
             output = self.centroid(output)
         else:
             output = self.manifolds[-1].logmap0(output)
         return output
+
 
 class CentroidDecoder(Decoder):
     """
@@ -108,7 +145,9 @@ class CentroidDecoder(Decoder):
     def __init__(self, config, manifold=None):
         super(CentroidDecoder, self).__init__(config)
         self.manifold = manifold
-        self.centroid = CentroidDistance(config.model.hidden_dim, config.model.dim, self.manifold, config.model.dropout)
+        self.centroid = CentroidDistance(
+            config.model.hidden_dim, config.model.dim, self.manifold, config.model.dropout
+        )
         self.message_passing = True
 
     def decode(self, x, adj):
@@ -116,3 +155,12 @@ class CentroidDecoder(Decoder):
         return output
 
 
+class LogReg(nn.Module):
+    def __init__(self, ft_in, nb_classes):
+        super(LogReg, self).__init__()
+        self.fc = nn.Linear(ft_in, nb_classes)
+        self.bn = nn.BatchNorm1d(ft_in)
+
+    def forward(self, seq):
+        ret = self.fc(self.bn(seq))
+        return ret

@@ -1,0 +1,10 @@
+# configs/train/train_fsl.yaml
+  
+  lr: 0.01
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 1000
+  print_interval: 50
+  save_interval: 50
+  weight_decay: 0.0001
+  grad_norm: 1.0

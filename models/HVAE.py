@@ -52,12 +52,12 @@ class HVAE(nn.Module):
         nn.init.normal_(self.graph_prototypes, mean=0.0, std=std)
 
     def forward(self, x, adj, labels):
+
         node_mask = node_flags(adj)
         edge_mask = node_mask.unsqueeze(2) * node_mask.unsqueeze(1)
         node_mask = node_mask.unsqueeze(-1)
 
         posterior = self.encoder(x, adj, node_mask)
-
         h = posterior.sample()
         type_pred = self.decoder(h, adj, node_mask)
 

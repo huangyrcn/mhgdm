@@ -1,7 +1,6 @@
 # configs/ae.yaml
 defaults:
-  - data : ENZYMES
-  - fsl_task : 10shot
+  - data : Letter_high
   - model : ae
   - train : train_score
   - _self_
@@ -13,7 +12,7 @@ timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
 debug: false
 data:
-  batch_size: 256
+  batch_size: 1024
 model:
   use_proto_loss: true
 seed: 4

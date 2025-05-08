@@ -139,11 +139,9 @@ class ScoreNetworkX_poincare(torch.nn.Module):
                 padding_size = self.nfeat - x.size(-1)
                 padding = torch.zeros(*x.shape[:-1], padding_size, device=x.device, dtype=x.dtype)
                 x = torch.cat([x, padding], dim=-1)
-                print(f"Warning: Padded input x feature dim from {x.size(-1)-padding_size} to {self.nfeat}")
             else: # x.size(-1) > self.nfeat
                 # Truncate or raise error - Truncating for now
                 x = x[..., :self.nfeat]
-                print(f"Warning: Truncated input x feature dim from {x.size(-1)} to {self.nfeat}")
 
         # 前向传播：双曲空间特征变换+多层HGAT/HGCN+时间调制
         xt = x.clone()
@@ -179,14 +177,13 @@ class ScoreNetworkX_poincare(torch.nn.Module):
         return x
 
 class ScoreNetworkX_poincare_proto(torch.nn.Module):
-    def __init__(self, max_feat_num, depth, nhid,manifold,edge_dim,GCN_type,**kwargs):
-        super().__init__()
+    def __init__(self, max_feat_num, depth, nhid, manifold, edge_dim, GCN_type, **kwargs):
+        super(ScoreNetworkX_poincare_proto, self).__init__()
         self.manifold = manifold
         self.nfeat = max_feat_num
         self.depth = depth
         self.nhid = nhid
-        self.proto_weight = kwargs.get('proto_weight', 0.1)  
-        # 根据GCN_type选择层类型（支持欧式和双曲）
+        self.proto_weight = kwargs.get('proto_weight', 0.1)  # Default weight for proto guidance
         if GCN_type == 'GCN':
             layer_type = GCLayer
         elif GCN_type == 'GAT':
@@ -198,130 +195,89 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
         else:
             raise AttributeError
         self.layers = torch.nn.ModuleList()
+        
+        # 构建图卷积层
         if self.manifold is not None:
-            # manifold列表，支持多层双曲空间特征传递
-            self.manifolds = [self.manifold]*(depth+1)
+            self.manifolds = [self.manifold] * (depth + 1)
             for i in range(self.depth):
                 if i == 0:
-                    self.layers.append(layer_type(self.nfeat, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+                    self.layers.append(layer_type(self.nfeat, self.nhid, self.manifolds[i], self.manifolds[i+1], edge_dim=edge_dim))
                 else:
-                    self.layers.append(layer_type(self.nhid, self.nhid,self.manifolds[i],self.manifolds[i+1],edge_dim=edge_dim))
+                    self.layers.append(layer_type(self.nhid, self.nhid, self.manifolds[i], self.manifolds[i+1], edge_dim=edge_dim))
         else:
             for i in range(self.depth):
                 if i == 0:
-                    self.layers.append(layer_type(self.nfeat, self.nhid,edge_dim=edge_dim))
+                    self.layers.append(layer_type(self.nfeat, self.nhid, edge_dim=edge_dim))
                 else:
-                    self.layers.append(layer_type(self.nhid, self.nhid,edge_dim=edge_dim))
+                    self.layers.append(layer_type(self.nhid, self.nhid, edge_dim=edge_dim))
+
+        # MLP层，用于最终输出
         self.fdim = self.nfeat + self.depth * self.nhid
-        self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=self.nfeat,
-                            use_bn=False, activate_func=F.elu)
-        # 时间嵌入和缩放，用于扩散模型的时间调制
-        self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2*self.nfeat, output_dim=self.nfeat,
-                            use_bn=False, activate_func=F.elu)
-        self.time_scale_net = nn.Sequential(
-            nn.Linear(self.nfeat+1, self.nfeat),
-            nn.SiLU(),          # ⚡ 更平滑，不是 ReLU
-            nn.Linear(self.nfeat, 1),
-            nn.Sigmoid()        # ⚡ 限制输出在 (0,1)
+        self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2 * self.fdim, output_dim=self.nfeat, use_bn=False, activate_func=F.elu)
+        
+        # 时间嵌入网络
+        self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2 * self.nfeat, output_dim=self.nfeat, use_bn=False, activate_func=F.elu)
+        self.time_scale = nn.Sequential(
+            nn.Linear(self.nfeat + 1, self.nfeat),
+            nn.ReLU(),
+            nn.Linear(self.nfeat, 1)
         )
-        self.proto_proj = MLP(          # 3 层 MLP，和 temb_net 写法一致
-            num_layers=3,
-            input_dim=max_feat_num,     # 10
-            hidden_dim=2*max_feat_num,  # 20
-            output_dim=nhid,            # 32
-            use_bn=False,
-            activate_func=F.elu
-        )
-        self.debug = kwargs.get("debug", False)
-        self.global_step = 0
-
-  # ======== 辅助：调试输出 ========
-    def dbgs(self, name, tensor):
-        if not self.debug:
-            return
-        if tensor is None:
-            print(f"[DBG] {name}: None")
-            return
-        with torch.no_grad():
-            nan_cnt = (~torch.isfinite(tensor)).sum().item()
-            t_min = tensor.min().item() if torch.isfinite(tensor).any() else float('nan')
-            t_max = tensor.max().item() if torch.isfinite(tensor).any() else float('nan')
-            print(f"[DBG] {name}: shape={tuple(tensor.shape)}, min={t_min:.4e}, max={t_max:.4e}, nan/inf={nan_cnt}")
-    # ======== forward ========
     def forward(self, x, adj, flags, t, labels, protos):
-        """x: (B, N, F)  adj: (B, N, N)  t: (B,)  labels: (B, N)"""
-        self.global_step += 1
+        # 如果输入特征的维度小于预设维度，则进行补全
+        if x.size(-1) != self.nfeat:
+            if x.size(-1) < self.nfeat:
+                padding_size = self.nfeat - x.size(-1)
+                padding = torch.zeros(*x.shape[:-1], padding_size, device=x.device, dtype=x.dtype)
+                x = torch.cat([x, padding], dim=-1)
+            else:
+                x = x[..., :self.nfeat]
+
         xt = x.clone()
-        self.dbgs("x_init", x)
-
-        # ---- 时间嵌入 ----
-        temb = get_timestep_embedding(t, self.nfeat)  # (B, F)
-        self.dbgs("temb", temb)
-        x = exp_after_transp0(x, self.temb_net(temb), self.manifolds[0])
-        self.dbgs("x_after_exp_transp0", x)
-
-        # ---- 进入 list ----
+        temb = get_timestep_embedding(t, self.nfeat)
+        temb_output = self.temb_net(temb)
+        
+        # 进行时间调制处理
+        x = exp_after_transp0(x, temb_output, self.manifolds[0])
+        
         if self.manifold is not None:
             x_list = [self.manifolds[0].logmap0(x)]
         else:
             x_list = [x]
-        self.dbgs("logmap0_x0", x_list[0])
 
-        # ---- GNN layers ----
+        # 计算原型相似性并融合
+        if protos is not None:
+            proto = protos[labels]  # (B, N, 10)
+            if self.manifold is not None:
+                # Logmap 将 proto 和 x 映射到切空间
+                log_proto_x = self.manifolds[0].logmap(proto, x)  # (B, N, D) - The tangent vector at x in the manifold
+
+                # 进行原型的移动操作
+                x = self.manifold.expmap(x, log_proto_x * self.proto_weight)  # Move along the geodesic towards proto
+            else:
+                # If the manifold is None, fall back to Euclidean space for the movement (as in original code)
+                x = x + self.proto_weight * (proto - x)
+
+        # 通过图卷积层传播特征
         for i in range(self.depth):
             x = self.layers[i]((x, adj))[0]
-            name = f"layer{i}_out"
-            self.dbgs(name, x)
             if self.manifold is not None:
-                x_list.append(self.manifolds[i + 1].logmap0(x))
-                self.dbgs(name + "_logmap0", x_list[-1])
+                x_list.append(self.manifolds[i+1].logmap0(x))
             else:
                 x_list.append(x)
 
-        # ---- 拼接 & final MLP ----
-        xs = torch.cat(x_list, dim=-1)
-        self.dbgs("xs_cat", xs)
+        # 拼接所有层的输出
+        xs = torch.cat(x_list, dim=-1)  # B x N x (F + num_layers x H)
         out_shape = (adj.shape[0], adj.shape[1], -1)
         x = self.final(xs).view(*out_shape)
-        self.dbgs("x_after_final", x)
-
-        # ---- manifold delta ----
-        # --- 等比缩放 ---
-        norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-        r_max = 0.5  # 把半径设得更小一些，比如0.5，比0.7更稳
-        scale = torch.where(norm > r_max, r_max / (norm + 1e-6), torch.ones_like(norm))
-        x = x * scale
-
+        
+        # 双曲空间的映射操作
         x = self.manifold.expmap0(x)
-        self.dbgs("x_expmap0", x)
         x = self.manifold.logmap(xt, x)
-        self.dbgs("x_delta", x)
-
-        # ---- Proto 引导 ----
-        if protos is not None:
-            proto = protos[labels]  # (B, N, F_proto)
-            proto_diff = self.manifold.logmap0(proto)
-            self.dbgs("proto_diff", proto_diff)
-            warm = min(1.0, self.global_step  / 500)   # 500步渐变，可以自己调
-            x = x + (self.proto_weight * warm) * proto_diff
-            self.dbgs("x_after_proto", x)
-
-        # ---- 时间调制 ----
-        time_input = torch.cat([
-            temb.repeat_interleave(x.size(1), dim=0).view(x.size(0), x.size(1), -1),  # (B,N,F)
-            self.manifold.lambda_x(xt, keepdim=True)
-        ], dim=-1)
-        scale_raw = self.time_scale_net(time_input)   
-        scale = 0.25 + 3.75 * scale_raw 
-
-        self.dbgs("time_scale", scale)
-        x = x * scale
-        self.dbgs("x_scaled", x)
-
-        # ---- mask ----
+        
+        # 时间缩放
+        x = x * self.time_scale(torch.cat([temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1))
+        
+        # 掩码应用，忽略不需要的节点
         x = mask_x(x, flags)
-        self.dbgs("x_masked", x)
-
-        # -------- done --------
+        
         return x
-

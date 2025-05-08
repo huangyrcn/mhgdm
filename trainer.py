@@ -1,8 +1,8 @@
 import os
 import time
 
-
 import ml_collections
+import torch.nn.functional as F  # 确保导入了 F
 
 import wandb
 from tqdm import trange
@@ -32,6 +32,7 @@ from utils.logger import (
 from utils.manifolds_utils import (
     get_manifold,
 )
+from layers.Decoders import Classifier,LogReg  # 使用 LogReg 替代 Classifier
 
 
 class Trainer(object):
@@ -606,251 +607,335 @@ class Trainer(object):
         print(" ")
         return self.run_name
 
-    def train_fsl(self):  # 元测试模型
-        # 从dataset中采样元测试任务
-        # 使用元测试任务的支持集编码计算原型
-        # 然后基于原型引导生成扩充支持集
-        # 然后使用支持集微调分类任务模型
-        # 并最终在查询集上评估分类性能
-        print("Meta-testing...")
+    def train_fsl(self):
+        """
+        Train the few-shot learning model using the configuration from fsl.yaml
+        """
 
-        # -------- Load Pre-trained Models (Score Network and optional AE) --------
+        print("\033[91m" + f"{self.run_name}" + "\033[0m")
+
+        # Load dataset
+        from utils.data_utils import MyDataset
+
+        self.dataset = MyDataset(self.config)
+
+        # Load pretrained encoder
         if self.config.model.ae_path is None:
-            Encoder = None
-            self.manifold = get_manifold(
-                self.config.model.manifold,
-                self.config.model.c,
-            )
-        else:
-            checkpoint_ae = torch.load(
-                self.config.model.ae_path,
-                map_location=self.config.device,
-                weights_only=False,
-            )
-            AE_config = ml_collections.ConfigDict(checkpoint_ae["model_config"])
-            AE_config.model.dropout = 0  # Ensure dropout is off during inference/testing
-            ae = HVAE(AE_config)
-            ae.load_state_dict(
-                checkpoint_ae["ae_state_dict"],
-                strict=False,
-            )
-            ae.eval()  # Set AE to evaluation mode
-            for param in ae.parameters():
-                param.requires_grad = False  # Freeze AE parameters
-            Encoder = ae.encoder.to(self.device)
-            self.manifold = Encoder.manifold
-            print(f"Loaded AE from: {self.config.model.ae_path}")
+            raise ValueError("No autoencoder path specified in config")
 
-        # -------- Load FSL Data --------
-        # Assuming load_data can handle FSL task setup or a new loader is needed
-        # For now, let's assume test_loader provides meta-test tasks
-        # Each batch in test_loader could represent one task (support + query)
-        # Or, we might need a dedicated FSL dataloader.
-        # Let's proceed assuming test_loader yields tasks.
-        _, self.meta_test_loader = load_data(
-            self.config,
-            fsl_task=True,
-        )  # Modify load_data or use a specific FSL loader
-
-        # -------- Meta-Testing Loop --------
-        all_task_accuracies = []
-        num_tasks = len(self.meta_test_loader)  # Or specify number of tasks in config
-
-        for (
-            task_idx,
-            task_data,
-        ) in enumerate(self.meta_test_loader):
-            print(f"--- Processing Meta-Test Task {task_idx + 1}/{num_tasks} ---")
-
-            # 1. Split task data into support and query sets
-            # This depends heavily on how the FSL dataloader structures the data.
-            # Example structure: task_data = (support_x, support_adj, support_y, query_x, query_adj, query_y)
-            # Adjust based on your actual FSL data loading implementation.
-            # For demonstration, let's assume a function `split_support_query` exists.
-            # support_x, support_adj, support_y, query_x, query_adj, query_y = split_support_query(task_data, self.config.fsl.n_way, self.config.fsl.k_shot, self.config.fsl.k_query, self.device)
-
-            # Placeholder: Assuming task_data is already structured or needs specific handling
-            # Example: Directly load support and query data if loader provides it separately per iteration
-            (
-                support_x,
-                support_adj,
-                support_labels,
-            ) = load_batch(
-                task_data["support"],
-                self.device,
-            )  # Adjust based on actual loader output
-            (
-                query_x,
-                query_adj,
-                query_labels,
-            ) = load_batch(
-                task_data["query"],
-                self.device,
-            )  # Adjust based on actual loader output
-
-            print(f"Support set size: {support_x.shape[0]}, Query set size: {query_x.shape[0]}")
-
-            # 2. Compute prototypes from the support set using the Encoder
-            if Encoder is not None:
-                with torch.no_grad():
-                    support_z, _ = Encoder(
-                        support_x,
-                        support_adj,
-                    )  # Get latent representations
-                    # Compute prototypes (e.g., mean of embeddings per class)
-                    # This requires knowing the class labels (`support_labels`)
-                    # Example:
-                    # unique_labels = torch.unique(support_labels)
-                    # support_protos = torch.stack([support_z[support_labels == label].mean(dim=0) for label in unique_labels])
-                    # print(f"Computed {len(unique_labels)} prototypes from support set.")
-
-                    # Placeholder for actual prototype computation logic
-                    support_protos = compute_protos_from(
-                        Encoder,
-                        [
-                            (
-                                support_x,
-                                support_adj,
-                                support_labels,
-                            )
-                        ],
-                        self.device,
-                    )  # Adapt compute_protos_from if needed
-                    print(f"Computed prototypes from support set. Shape: {support_protos.shape}")
-
-            else:
-                print("Warning: No AE Encoder provided, cannot compute latent prototypes.")
-                support_protos = None  # Or handle differently if no AE is used
-
-            # 3. Generate augmented support set based on prototypes (Optional)
-            # This step involves using the loaded Score Network (model_x, model_adj)
-            # and the computed prototypes to guide the generation process.
-            # You would need to adapt the Sampler class or create a specific generation function.
-            # Example call (conceptual):
-            # sampler = Sampler(self.config, self.model_x, self.model_adj, self.manifold, Encoder) # Pass necessary models
-            # augmented_x, augmented_adj, augmented_labels = sampler.sample_conditional(
-            #     num_samples_per_class=self.config.fsl.augmentation_samples,
-            #     prototypes=support_protos,
-            #     class_labels=unique_labels # Need the labels corresponding to protos
-            # )
-            # print(f"Generated {augmented_x.shape[0]} augmented samples.")
-
-            # Combine original support set with augmented data
-            # combined_support_x = torch.cat([support_x, augmented_x], dim=0)
-            # combined_support_adj = torch.cat([support_adj, augmented_adj], dim=0) # Check adjacency matrix combination logic
-            # combined_support_labels = torch.cat([support_labels, augmented_labels], dim=0)
-            # print(f"Combined support set size: {combined_support_x.shape[0]}")
-
-            # For now, skipping augmentation and using original support set for fine-tuning
-            (
-                combined_support_x,
-                combined_support_adj,
-                combined_support_labels,
-            ) = (
-                support_x,
-                support_adj,
-                support_labels,
-            )
-
-            # 4. Fine-tune/Train a classifier on the (augmented) support set
-            # Define a simple classifier (e.g., Logistic Regression, MLP, or prototype-based)
-            # Train this classifier using `combined_support_x/adj/labels` (or their latent embeddings `support_z`)
-
-            # Example: Using latent embeddings `support_z` and a simple classifier
-            if Encoder is not None:
-                with torch.no_grad():
-                    (
-                        combined_support_z,
-                        _,
-                    ) = Encoder(
-                        combined_support_x,
-                        combined_support_adj,
-                    )
-                    query_z, _ = Encoder(
-                        query_x,
-                        query_adj,
-                    )
-
-                # Define classifier (e.g., Logistic Regression on latent space)
-                classifier = torch.nn.Linear(
-                    combined_support_z.size(-1),
-                    self.config.fsl.n_way,
-                ).to(
-                    self.device
-                )  # n_way classification
-                classifier_optimizer = torch.optim.Adam(
-                    classifier.parameters(),
-                    lr=self.config.fsl.classifier_lr,
-                )
-                loss_fn_classifier = torch.nn.CrossEntropyLoss()
-
-                print("Fine-tuning classifier...")
-                classifier.train()
-                for ft_epoch in range(self.config.fsl.classifier_epochs):
-                    classifier_optimizer.zero_grad()
-                    logits = classifier(combined_support_z)
-                    # Need to map original labels to 0..N-1 for CrossEntropyLoss
-                    # Assuming labels are already in this range or a mapping is applied
-                    loss = loss_fn_classifier(
-                        logits,
-                        combined_support_labels,
-                    )
-                    loss.backward()
-                    classifier_optimizer.step()
-                    if (ft_epoch + 1) % 10 == 0:  # Print progress occasionally
-                        print(f"  Classifier Fine-tune Epoch {ft_epoch+1}, Loss: {loss.item():.4f}")
-
-                # 5. Evaluate the classifier on the query set
-                print("Evaluating on query set...")
-                classifier.eval()
-                with torch.no_grad():
-                    query_logits = classifier(query_z)
-                    predictions = torch.argmax(
-                        query_logits,
-                        dim=1,
-                    )
-                    # Map query_labels similarly if needed
-                    correct = (predictions == query_labels).sum().item()
-                    accuracy = correct / len(query_labels)
-                    all_task_accuracies.append(accuracy)
-                    print(f"Task {task_idx + 1} Accuracy: {accuracy:.4f}")
-
-            else:
-                print("Skipping classifier training/evaluation as no Encoder is available.")
-                # Handle evaluation differently if working directly in graph space
-
-        # -------- Final Results --------
-        if all_task_accuracies:
-            mean_accuracy = np.mean(all_task_accuracies)
-            std_accuracy = np.std(all_task_accuracies)
-            confidence_interval = 1.96 * std_accuracy / np.sqrt(len(all_task_accuracies))  # 95% CI
-
-            print("\n--- Meta-Testing Summary ---")
-            print(f"Number of tasks evaluated: {len(all_task_accuracies)}")
-            print(f"Mean Accuracy: {mean_accuracy:.4f}")
-            print(f"Standard Deviation: {std_accuracy:.4f}")
-            print(f"95% Confidence Interval: +/- {confidence_interval:.4f}")
-
-            # Log results (e.g., to wandb or logger)
-            if not self.config.wandb.no_wandb:
-                wandb.log(
-                    {
-                        "meta_test_mean_accuracy": mean_accuracy,
-                        "meta_test_std_accuracy": std_accuracy,
-                        "meta_test_confidence_interval": confidence_interval,
-                    }
-                )
-        else:
-            print("\n--- Meta-Testing Summary ---")
-            print("No tasks were successfully evaluated.")
-
-        print("Meta-testing finished.")
-        # Potentially return results or save them
-        return (
-            {
-                "mean_accuracy": mean_accuracy,
-                "std_accuracy": std_accuracy,
-            }
-            if all_task_accuracies
-            else {}
+        checkpoint = torch.load(
+            self.config.model.ae_path, map_location=self.device, weights_only=False
         )
+        AE_state_dict = checkpoint["ae_state_dict"]
+        AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
+        AE_config.model.dropout = 0
+        ae = HVAE(AE_config)
+        ae.load_state_dict(AE_state_dict, strict=False)
+
+        # Freeze encoder parameters
+        for name, param in ae.named_parameters():
+            if "encoder" in name:
+                param.requires_grad = False
+
+        self.model = ae.encoder.to(self.device)
+        self.model.eval()
+
+        # 初始化必要的参数
+        self.N_way = self.config.fsl_task.N_way
+        self.K_shot = self.config.fsl_task.K_shot
+        self.query_size = self.config.fsl_task.query_size
+
+        # 初始化分类器和优化器
+        ft_in = self.config.model.hidden_dim
+        nb_classes = self.N_way
+        self.log = LogReg(ft_in, nb_classes).to(self.device)
+        self.opt = torch.optim.Adam(self.log.parameters(), lr=self.config.train.lr)
+        self.xent = torch.nn.CrossEntropyLoss()
+
+        # 初始化logger
+        logger = Logger(
+            str(
+                os.path.join(
+                    self.log_dir,
+                    f"{self.run_name}.log",
+                )
+            ),
+            mode="a",
+        )
+        logger.log(
+            f"{self.run_name}",
+            verbose=False,
+        )
+        start_log(logger, self.config)
+        train_log(logger, self.config)
+
+        # 创建保存目录
+        save_dir = (
+            f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+        )
+        os.makedirs(save_dir, exist_ok=True)
+        os.makedirs("./savepoint", exist_ok=True)
+
+        # 初始化最佳准确率
+        best_mean_acc = 0.0
+        best_std = 0.0
+        best_test_accs = []
+
+        # Sample test tasks
+        test_accs = []
+        start_test_idx = 0
+        t_start = time.time()
+        
+        # 计算总任务数量，用于进度条显示
+        total_tasks = (len(self.dataset.test_graphs) -self.K_shot * self.dataset.test_classes_num)/(self.N_way * self.query_size)
+        
+        # 使用tqdm显示整体训练进度
+        from tqdm import tqdm
+        task_progress = tqdm(total=total_tasks, desc="Training models", position=0)
+
+        while (
+            start_test_idx
+            < len(self.dataset.test_graphs) - self.K_shot * self.dataset.test_classes_num
+        ):
+            test_acc = self.train_one_step(epoch=0, test_idx=start_test_idx)
+            test_accs.append(test_acc)
+            start_test_idx += self.N_way * self.query_size
+            
+            # 更新整体进度条
+            task_progress.update(1)
+            task_progress.set_postfix({"last_acc": f"{test_acc:.4f}", "mean_acc": f"{sum(test_accs)/len(test_accs):.4f}"})
+
+            # 计算当前准确率
+            mean_acc = sum(test_accs) / len(test_accs)
+            std = np.array(test_accs).std()
+
+            # 构建保存信息
+            save_dict = {
+                "model_config": self.config.to_dict(),
+                "log_state_dict": self.log.state_dict(),
+                "mean_acc": mean_acc,
+                "std": std,
+                "test_accs": test_accs,
+                "best_mean_acc": best_mean_acc,
+                "current_mean_acc": mean_acc,
+            }
+
+
+            # 判断并保存最佳模型
+            if mean_acc > best_mean_acc:
+                best_mean_acc = mean_acc
+                best_std = std
+                best_test_accs = test_accs.copy()
+                save_dict["best_mean_acc"] = best_mean_acc
+                os.makedirs(
+                    os.path.dirname(f"{save_dir}/best.pth"),
+                    exist_ok=True,
+                )
+                torch.save(
+                    save_dict,
+                    f"{save_dir}/best.pth",
+                )
+
+        
+        # 关闭进度条
+        task_progress.close()
+
+
+        print("Mean Test Acc {:.4f}  Std {:.4f}".format(mean_acc, std))
+        print("Best Mean Test Acc {:.4f}  Std {:.4f}".format(best_mean_acc, best_std))
+
+        return mean_acc, std
+
+    def train_one_step(self, epoch, test_idx):
+        """
+        Train or evaluate on a single task.
+
+        :param epoch: Current epoch number
+        :param test_idx: Index of the test task
+        :return: Accuracy for the task
+        """
+        self.model.eval()
+
+        # Sample one task using dataset's method
+        first_N_class_sample = np.array(list(range(self.dataset.test_classes_num)))
+        current_task = self.dataset.sample_one_task(
+            self.dataset.test_tasks,
+            first_N_class_sample,
+            K_shot=self.K_shot,
+            query_size=self.query_size,
+            test_start_idx=test_idx,
+        )
+
+        # Get support set data
+        support_x = current_task["support_set"]["x"].to(self.device)
+        support_adj = current_task["support_set"]["adj"].to(self.device)
+        support_label = current_task["support_set"]["label"].to(self.device)
+
+        # 创建支持集的数据加载器
+        support_dataset = torch.utils.data.TensorDataset(support_x, support_adj, support_label)
+        support_loader = torch.utils.data.DataLoader(
+            support_dataset, batch_size=len(support_x), shuffle=False  # 可以调整批次大小
+        )
+        
+        # 使用 sampler 扩充 support_loader
+        # 创建一个临时配置对象，用于初始化 Sampler
+        from sampler import Sampler
+        import ml_collections
+        import copy
+        
+        # 创建采样器配置
+        sampler_config = copy.deepcopy(self.config)
+        
+        # 设置采样器要使用的 dataloader
+        sampler_config.dataloader = support_loader
+        
+        sampler = Sampler(sampler_config)
+        augmented_support_loader = sampler.sample(need_eval=False)
+        
+        # 将原始支持集与增强数据结合，而不是替换
+        # 从两个DataLoader中提取数据
+        augmented_x = augmented_support_loader.dataset.tensors[0]
+        augmented_adj = augmented_support_loader.dataset.tensors[1]
+        augmented_label = augmented_support_loader.dataset.tensors[2]
+        
+        # 确保所有张量都在同一个设备上 (self.device)
+        augmented_x = augmented_x.to(self.device)
+        augmented_adj = augmented_adj.to(self.device)
+        augmented_label = augmented_label.to(self.device)
+        
+        # 打印标签信息，用于调试
+        print(f"augmented_label: {augmented_label.cpu().numpy()}")
+        print(f"Augmented labels range: min={augmented_label.min().item()}, max={augmented_label.max().item()}")
+        print(f"Unique labels in augmented data: {torch.unique(augmented_label).cpu().numpy()}")
+        print(f"Expected N_way: {self.N_way}")
+        
+        # 确保标签在有效范围内 (0 到 N_way-1)
+        if augmented_label.max() >= self.N_way:
+            print(f"WARNING: Found labels outside expected range. Clamping values from range [{augmented_label.min()}, {augmented_label.max()}] to [0, {self.N_way-1}].")
+            augmented_label = torch.clamp(augmented_label, 0, self.N_way - 1)
+            print(f"After clamping - unique labels: {torch.unique(augmented_label).cpu().numpy()}")
+        
+        # 创建组合数据集
+        combined_dataset = torch.utils.data.TensorDataset(
+            augmented_x, augmented_adj, augmented_label
+        )
+        
+        # 创建新的DataLoader
+        combined_loader = torch.utils.data.DataLoader(
+            combined_dataset,
+            batch_size=len(support_x),  # 使用原始支持集的大小作为批次大小
+            shuffle=True  # 打乱数据顺序
+        )
+        
+        # 使用组合后的数据加载器
+        support_loader = combined_loader
+        print(f"Successfully combined support set: original size={len(support_dataset)}, augmented size={len(augmented_support_loader.dataset)}, combined size={len(combined_dataset)}")
+
+
+        # 初始化分类器训练参数
+        self.log.train()  # 设置为训练模式
+        # best_loss = 1e9
+        # wait = 0
+        # patience = 10
+
+        # 对每个批次依次处理：先计算embedding，然后针对该批次进行多轮训练
+        for batch_x, batch_adj, batch_label in support_loader:
+            # 为整个批次计算 node_mask
+            node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
+
+            with torch.no_grad():
+                # 计算当前批次的嵌入
+                posterior = self.model(batch_x, batch_adj, node_masks)
+                graph_embs = posterior.mode()
+
+                # 处理维度，确保得到正确的图嵌入
+                if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
+                    graph_embs = graph_embs.squeeze(1)
+
+                # 对每个图的节点嵌入取平均，得到图级嵌入
+                batch_embeddings = graph_embs.mean(dim=1)  # 在节点维度上平均
+
+            # 对当前批次的嵌入训练多轮
+            from tqdm import trange
+            
+            # 使用配置文件中的训练轮次
+            num_epochs = self.config.train.num_epochs
+            
+            # 使用tqdm显示训练进度
+            for _ in trange(num_epochs, desc="Training batch", leave=False):
+                self.opt.zero_grad()
+                logits = self.log(batch_embeddings)
+                
+                # 计算损失
+                loss = F.cross_entropy(logits, batch_label.long())
+                
+                # 添加L2正则化
+                l2_reg = torch.tensor(0.0).to(self.device)
+                for param in self.log.parameters():
+                    l2_reg += torch.norm(param)
+                loss = loss + 0.1 * l2_reg
+                
+                # 反向传播和优化
+                loss.backward()
+                self.opt.step()
+                
+                # 保存最新的模型权重
+                torch.save(self.log.state_dict(), f"./savepoint/{self.config.data.name}_lr.pkl")
+        
+        # 评估阶段
+        self.log.eval()
+
+        # Get query set data
+        query_x = current_task["query_set"]["x"].to(self.device)
+        query_adj = current_task["query_set"]["adj"].to(self.device)
+        query_label = current_task["query_set"]["label"].to(self.device)
+
+        # 创建查询集的数据加载器
+        query_dataset = torch.utils.data.TensorDataset(query_x, query_adj, query_label)
+
+        # 处理可能的append_count
+        query_len = query_label.shape[0]
+        effective_len = query_len
+        if current_task["append_count"] != 0:
+            effective_len = query_len - current_task["append_count"]
+            query_dataset = torch.utils.data.TensorDataset(
+                query_x[:effective_len], query_adj[:effective_len], query_label[:effective_len]
+            )
+
+        query_loader = torch.utils.data.DataLoader(
+            query_dataset, batch_size=effective_len, shuffle=False  # 可以调整批次大小
+        )
+
+        # Process query set as batches
+        query_data = []
+        for batch_x, batch_adj, batch_label in query_loader:
+            # 为整个批次计算 node_mask
+            node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
+
+            with torch.no_grad():
+                # 直接处理整个批次
+                posterior = self.model(batch_x, batch_adj, node_masks)
+                graph_embs = posterior.mode()
+
+                # 处理维度
+                if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
+                    graph_embs = graph_embs.squeeze(1)
+
+                # 对每个图的节点嵌入取平均，得到图级嵌入
+                graph_embs = graph_embs.mean(dim=1)
+
+                # 添加到结果列表
+                query_data.append(graph_embs)
+
+        # Concatenate all batch results
+        query_data = torch.cat(query_data, dim=0)
+        query_labels = query_label[:effective_len]  # 只使用有效部分的标签
+
+        # Calculate accuracy
+        logits = self.log(query_data)
+        preds = torch.argmax(logits, dim=1)
+        acc = torch.sum(preds == query_labels).float() / query_labels.shape[0]
+
+        test_acc = acc.cpu().numpy()
+
+        return test_acc

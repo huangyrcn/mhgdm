@@ -90,10 +90,15 @@ def start_log(logger, config):
 
 
 def train_log(logger, config):
-    logger.log(
-        f"lr={config.train.lr} schedule={config.train.lr_schedule} ema={config.train.ema} "
-        f"epochs={config.train.num_epochs} reduce={config.train.reduce_mean} eps={config.train.eps}"
-    )
+    log_str = f"lr={config.train.lr} schedule={config.train.lr_schedule}"
+    if hasattr(config.train, 'ema'):
+        log_str += f" ema={config.train.ema}"
+    log_str += f" epochs={config.train.num_epochs}"
+    if hasattr(config.train, 'reduce_mean'):
+        log_str += f" reduce={config.train.reduce_mean}"
+    if hasattr(config.train, 'eps'):
+        log_str += f" eps={config.train.eps}"
+    logger.log(log_str)
     # model_log(logger, config)
     # sde_log(logger, config.sde)
     logger.log("-" * 100)
