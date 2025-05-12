@@ -33,6 +33,9 @@ use_proto_loss: true
 sum_transform: true
 use_norm: ln
 
+proto_margin: 1.0  
+
+
 
 
 

@@ -3,9 +3,12 @@ import time
 
 import ml_collections
 import torch.nn.functional as F  # 确保导入了 F
+from sampler import Sampler
+import ml_collections
+import copy
 
 import wandb
-from tqdm import trange
+from tqdm import trange, tqdm
 import numpy as np
 import torch
 from utils.protos_utils import (
@@ -23,34 +26,19 @@ from utils.loader import (
     load_loss_fn,
     load_batch,
 )
-from utils.logger import (
-    Logger,
-    set_log,
-    start_log,
-    train_log,
-)
 from utils.manifolds_utils import (
     get_manifold,
 )
-from layers.Decoders import Classifier,LogReg  # 使用 LogReg 替代 Classifier
+from utils.data_utils import MyDataset
+from layers.Decoders import Classifier, LogReg  # 使用 LogReg 替代 Classifier
+from sklearn.neighbors import KNeighborsClassifier
 
 
 class Trainer(object):
     def __init__(self, config):
         super(Trainer, self).__init__()
         self.config = config
-        (
-            self.log_folder_name,
-            self.log_dir,
-            self.ckpt_dir,
-        ) = set_log(self.config)
-        self.seed = load_seed(self.config.seed)
-        self.device = load_device(self.config)
-        self.run_name = self.config.run_name
-
-    def train_ae(self):
-        ts = self.config.timestamp
-
+        # -------- wandb --------
         mode = "disabled"
         if not self.config.debug:
             mode = "online" if self.config.wandb.online else "offline"
@@ -61,16 +49,23 @@ class Trainer(object):
             config=self.config.to_dict(),
             settings=wandb.Settings(_disable_stats=True),
             mode=mode,
-            dir=os.path.join("logs", "wandb"),  # 👈 将 wandb 日志写入 logs/wandb 目录
+            dir=os.path.join("logs", "wandb"),
         )
+        self.seed = load_seed(self.config.seed)
+        self.device = load_device(self.config)
+        self.run_name = self.config.run_name
+        self.dataset = MyDataset(self.config)
 
+
+    def train_ae(self):
+        ts = self.config.timestamp
         print("\033[91m" + f"{self.run_name}" + "\033[0m")
 
         # -------- Load data models, optimizers --------
         (
             self.train_loader,
             self.test_loader,
-        ) = load_data(self.config)
+        ) = self.dataset.get_loaders()
         (
             self.model,
             self.optimizer,
@@ -81,50 +76,32 @@ class Trainer(object):
         )
         total = sum([param.nelement() for param in self.model.parameters()])
         print("Number of parameter: %.4fM" % (total / 1e6))
-
-        logger = Logger(
-            str(
-                os.path.join(
-                    self.log_dir,
-                    f"{self.run_name}.log",
-                )
-            ),
-            mode="a",
-        )
-        logger.log(
-            f"{self.run_name}",
-            verbose=False,
-        )
-        start_log(logger, self.config)
-        train_log(logger, self.config)
-
+        self.encoder=self.model.encoder
+        # -------- metrics相关初始化 --------
+        self.N_way = self.config.fsl_task.N_way
+        self.K_shot = self.config.fsl_task.K_shot
+        self.query_size = self.config.fsl_task.query_size
+        best_acc = 0.0
         # -------- Training --------
-
         best_mean_test_loss = 1e10
 
-        for epoch in trange(
+        t = trange(
             0,
             (self.config.train.num_epochs),
             desc="[Epoch]",
             leave=False,
-        ):
-
+        )
+        for epoch in t:
             self.total_train_loss = []
             self.total_test_loss = []
             self.test_kl_loss = []
             self.test_edge_loss = []
             self.test_rec_loss = []
-            self.test_proto_loss = []  # 新增：记录测试时的原型损失
+            self.test_proto_loss = []
             t_start = time.time()
-
             # train
-
             self.model.train()
-
-            for (
-                step,
-                batch,
-            ) in enumerate(self.train_loader):
+            for step, batch in enumerate(self.train_loader):
                 self.optimizer.zero_grad()
                 x, adj, labels = load_batch(
                     batch,
@@ -136,7 +113,6 @@ class Trainer(object):
                     edge_loss,
                     proto_loss,
                 ) = self.model(x, adj, labels)
-
                 loss = (
                     rec_loss
                     + self.config.train.kl_regularization * kl_loss
@@ -150,16 +126,11 @@ class Trainer(object):
                 )
                 self.optimizer.step()
                 self.total_train_loss.append(loss.item())
-
             if self.config.train.lr_schedule:
                 self.scheduler.step()
-
             # loss evaluation
             self.model.eval()
-            for (
-                _,
-                test_batch,
-            ) in enumerate(self.test_loader):
+            for step, test_batch in enumerate(self.test_loader):
                 x, adj, labels = load_batch(
                     test_batch,
                     self.device,
@@ -177,7 +148,6 @@ class Trainer(object):
                         + self.config.train.edge_weight * edge_loss
                         + self.config.train.proto_weight * proto_loss
                     )
-
                     self.total_test_loss.append(loss.item())
                     self.test_rec_loss.append(rec_loss.item())
                     self.test_kl_loss.append(kl_loss.item())
@@ -188,7 +158,7 @@ class Trainer(object):
             mean_test_rec_loss = np.mean(self.test_rec_loss)
             mean_test_kl_loss = np.mean(self.test_kl_loss)
             mean_test_edge_loss = np.mean(self.test_edge_loss)
-            mean_test_proto_loss = np.mean(self.test_proto_loss)  # 计算平均原型损失
+            mean_test_proto_loss = np.mean(self.test_proto_loss)
             if (
                 "HGCN"
                 in [
@@ -198,15 +168,11 @@ class Trainer(object):
             ) and self.config.model.learnable_c:
                 self.model.show_curvatures()
 
-            # encoder evaluation
-            # encoder_acc, encoder_nmi, proto_match_acc = evaluate_encoder_metrics(
-            #     self.model.encoder, self.model.graph_prototypes, self.test_loader
-            # )
+
 
             # -------- Save checkpoints --------
             save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
             os.makedirs(save_dir, exist_ok=True)
-
             # 构建保存信息
             save_dict = {
                 "epoch": epoch,
@@ -215,18 +181,6 @@ class Trainer(object):
                 "best_loss": best_mean_test_loss,
                 "current_loss": mean_total_test_loss,
             }
-
-            # 按固定间隔保存epoch检查点
-            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
-                os.makedirs(
-                    os.path.dirname(f"{save_dir}/epoch_{epoch}.pth"),
-                    exist_ok=True,
-                )
-                torch.save(
-                    save_dict,
-                    f"{save_dir}/epoch_{epoch}.pth",
-                )
-
             # 判断并保存最佳模型
             if mean_total_test_loss < best_mean_test_loss:
                 best_mean_test_loss = mean_total_test_loss
@@ -239,18 +193,6 @@ class Trainer(object):
                     save_dict,
                     f"{save_dir}/best.pth",
                 )
-
-            # 保存最终模型
-            if epoch == self.config.train.num_epochs - 1:
-                os.makedirs(
-                    os.path.dirname(f"{save_dir}/final.pth"),
-                    exist_ok=True,
-                )
-                torch.save(
-                    save_dict,
-                    f"{save_dir}/final.pth",
-                )
-
             wandb.log(
                 {
                     "epoch": epoch,
@@ -259,71 +201,50 @@ class Trainer(object):
                     "test_edge_loss": mean_test_edge_loss,
                     "test_kl_loss": mean_test_kl_loss,
                     "test_rec_loss": mean_test_rec_loss,
-                    "test_proto_loss": mean_test_proto_loss,  # 添加到wandb日志
+                    "test_proto_loss": mean_test_proto_loss,
                 },
                 commit=True,
             )
 
-            if epoch % self.config.train.print_interval == self.config.train.print_interval - 1:
-                logger.log(
-                    f"{epoch + 1:03d} | {time.time() - t_start:.2f}s | "
-                    f"total train loss: {mean_total_train_loss:.3e} | "
-                    f"total test loss: {mean_total_test_loss:.3e} | "
-                    f"test rec loss: {mean_test_rec_loss:.3e} | "
-                    f"test kl loss: {mean_test_kl_loss:.3e} | "
-                    f"test edge loss: {mean_test_edge_loss:.3e} | "
-                    f"test proto loss: {mean_test_proto_loss:.3e} |",  # 添加到logger日志
-                    verbose=False,
+            # -------- Metric评估 --------
+            best_acc= 0.0  # Default if not evaluated in this epoch
+            if (epoch + 1) % self.config.train.eval_interval == 0 or (epoch == self.config.train.num_epochs - 1):
+                mean_acc   , std_acc, best_acc = self.fsl_test(
+                    epoch, f"{save_dir}/classifier"
+                )
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "mean_fsl_acc": mean_acc,
+                        "std_fsl_acc": std_acc,
+                    },
+                    commit=True,
                 )
 
-        print(" ")
+            # -------- Metric评估结束 --------
 
         return self.run_name
 
     def train_score(self, ts=None):
         # ts = self.config.timestamp
         if self.config.model.ae_path is None:
-            Encoder = None
+            self.encoder = None
             self.manifold = get_manifold(
                 self.config.model.manifold,
                 self.config.model.c,
             )
         else:
             checkpoint = torch.load(
-                self.config.model.ae_path,
-                map_location=self.config.device,
-                weights_only=False,
+                self.config.model.ae_path, map_location=self.config.device
             )
             AE_state_dict = checkpoint["ae_state_dict"]
             AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
-            AE_config.model.dropout = 0
             ae = HVAE(AE_config)
-            ae.load_state_dict(
-                AE_state_dict,
-                strict=False,
-            )
-            for (
-                name,
-                param,
-            ) in ae.named_parameters():
-                if "encoder" in name or "decoder" in name:
-                    param.requires_grad = False
-            Encoder = ae.encoder.to(self.device)
-            self.manifold = Encoder.manifold
+            ae.load_state_dict(AE_state_dict)
+            ae.encoder.requires_grad_(False)
+            self.encoder = ae.encoder.to(self.device).eval()
 
-        # -------- wandb --------
-        mode = "disabled"
-        if not self.config.debug:
-            mode = "online" if self.config.wandb.online else "offline"
-        wandb.init(
-            project=self.config.wandb.project,
-            entity=self.config.wandb.entity,
-            name=self.config.run_name,
-            config=self.config.to_dict(),
-            settings=wandb.Settings(_disable_stats=True),
-            mode=mode,
-            dir=os.path.join("logs", "wandb"),  # 👈 将 wandb 日志写入 logs/wandb 目录
-        )
+            self.manifold = self.encoder.manifold
 
         print("\033[91m" + f"{self.run_name}" + "\033[0m")
 
@@ -331,7 +252,7 @@ class Trainer(object):
         (
             self.train_loader,
             self.test_loader,
-        ) = load_data(self.config)
+        ) = self.dataset.get_loaders()
         self.params_x = self.config.model.x.to_dict()
         self.params_x["manifold"] = self.manifold
         self.params_adj = self.config.model.adj.to_dict()
@@ -364,32 +285,16 @@ class Trainer(object):
             decay=self.config.train.ema,
         )
 
-        logger = Logger(
-            str(
-                os.path.join(
-                    self.log_dir,
-                    f"{self.run_name}.log",
-                )
-            ),
-            mode="a",
-        )
-        logger.log(
-            f"{self.run_name}",
-            verbose=False,
-        )
-        start_log(logger, self.config)
-        train_log(logger, self.config)
-
         # region compute protos
         # 计算元训练集的 protos
 
         protos_train = compute_protos_from(
-            Encoder,
+            self.encoder,
             self.train_loader,
             self.device,
         )
         protos_test = compute_protos_from(
-            Encoder,
+            self.encoder,
             self.test_loader,
             self.device,
         )
@@ -399,7 +304,7 @@ class Trainer(object):
         self.loss_fn = load_loss_fn(
             self.config,
             self.manifold,
-            encoder=Encoder,
+            encoder=self.encoder,
         )
         # -------- 轮次--------
         best_mean_test_loss = 1e10  # Initialize best mean test loss
@@ -509,13 +414,10 @@ class Trainer(object):
             # endregion
 
             # region -------- Log losses --------
-            if epoch % self.config.train.print_interval == self.config.train.print_interval - 1:
-                logger.log(
-                    f"{epoch+1:03d} | {time.time()-t_start:.2f}s | "
-                    f"test x: {mean_test_x:.3e} | test adj: {mean_test_adj:.3e} | "
-                    f"train x: {mean_train_x:.3e} | train adj: {mean_train_adj:.3e} | ",
-                    verbose=False,
-                )
+            if (
+                epoch % self.config.train.print_interval
+                == self.config.train.print_interval - 1
+            ):
                 wandb.log(
                     {
                         "epoch": epoch,
@@ -536,7 +438,7 @@ class Trainer(object):
             # 构建保存信息
             save_dict = {
                 "epoch": epoch,
-                "model_config": self.config,
+                "model_config": self.config.to_dict(),  # 更安全
                 "params_x": self.params_x,
                 "params_adj": self.params_adj,
                 "x_state_dict": self.model_x.state_dict(),
@@ -548,27 +450,31 @@ class Trainer(object):
             }
 
             # 按固定间隔保存epoch检查点
-            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
+            if (
+                epoch % self.config.train.save_interval
+                == self.config.train.save_interval - 1
+            ):
                 os.makedirs(
                     os.path.dirname(f"{save_dir}/epoch_{epoch}.pth"),
                     exist_ok=True,
                 )
                 torch.save(
                     save_dict,
-                    f"{save_dir}/epoch_{epoch}.pth",
+                    os.path.join(save_dir, f"epoch_{epoch}.pth"),
                 )
 
             # 判断并保存最佳模型
             if total_test_loss < best_mean_test_loss:
                 best_mean_test_loss = total_test_loss
-                save_dict["best_loss"] = best_mean_test_loss
+                best_dict = save_dict.copy()
+                best_dict["best_loss"] = best_mean_test_loss
                 os.makedirs(
                     os.path.dirname(f"{save_dir}/best.pth"),
                     exist_ok=True,
                 )
                 torch.save(
-                    save_dict,
-                    f"{save_dir}/best.pth",
+                    best_dict,
+                    os.path.join(save_dir, "best.pth"),
                 )
 
             # 保存最终模型
@@ -579,7 +485,7 @@ class Trainer(object):
                 )
                 torch.save(
                     save_dict,
-                    f"{save_dir}/final.pth",
+                    os.path.join(save_dir, f"final.pth"),
                 )
             # endregion
 
@@ -611,299 +517,221 @@ class Trainer(object):
         """
         Train the few-shot learning model using the configuration from fsl.yaml
         """
-
         print("\033[91m" + f"{self.run_name}" + "\033[0m")
 
-        # Load dataset
-        from utils.data_utils import MyDataset
-
-        self.dataset = MyDataset(self.config)
-
         # Load pretrained encoder
-        if self.config.model.ae_path is None:
+        if self.config.ae_path is None:
             raise ValueError("No autoencoder path specified in config")
 
         checkpoint = torch.load(
-            self.config.model.ae_path, map_location=self.device, weights_only=False
+            self.config.ae_path, map_location=self.device, weights_only=False
         )
         AE_state_dict = checkpoint["ae_state_dict"]
         AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
-        AE_config.model.dropout = 0
+        self.config.model = AE_config.model
         ae = HVAE(AE_config)
         ae.load_state_dict(AE_state_dict, strict=False)
+        ae.encoder.requires_grad_(False)
+        self.encoder = ae.encoder.to(self.device).eval()
 
-        # Freeze encoder parameters
-        for name, param in ae.named_parameters():
-            if "encoder" in name:
-                param.requires_grad = False
-
-        self.model = ae.encoder.to(self.device)
-        self.model.eval()
 
         # 初始化必要的参数
         self.N_way = self.config.fsl_task.N_way
         self.K_shot = self.config.fsl_task.K_shot
         self.query_size = self.config.fsl_task.query_size
 
-        # 初始化分类器和优化器
-        ft_in = self.config.model.hidden_dim
-        nb_classes = self.N_way
-        self.log = LogReg(ft_in, nb_classes).to(self.device)
-        self.opt = torch.optim.Adam(self.log.parameters(), lr=self.config.train.lr)
-        self.xent = torch.nn.CrossEntropyLoss()
 
-        # 初始化logger
-        logger = Logger(
-            str(
-                os.path.join(
-                    self.log_dir,
-                    f"{self.run_name}.log",
-                )
-            ),
-            mode="a",
+
+        # 传入当前轮次(0)和初始最佳准确率(0.0)
+        mean_acc, std_acc, best_acc = self.fsl_test(epoch=0)
+        # 记录当前轮次的准确率
+        wandb.log(
+            {
+                "epoch": 0,
+                "mean_fsl_acc": mean_acc,
+                "std_fsl_acc": std_acc,
+                "best_fsl_acc": best_acc,
+            },
+            commit=True,
         )
-        logger.log(
-            f"{self.run_name}",
-            verbose=False,
-        )
-        start_log(logger, self.config)
-        train_log(logger, self.config)
+        return self.config.run_name
 
-        # 创建保存目录
-        save_dir = (
-            f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
-        )
-        os.makedirs(save_dir, exist_ok=True)
-        os.makedirs("./savepoint", exist_ok=True)
-
-        # 初始化最佳准确率
-        best_mean_acc = 0.0
-        best_std = 0.0
-        best_test_accs = []
-
-        # Sample test tasks
-        test_accs = []
-        start_test_idx = 0
-        t_start = time.time()
-        
-        # 计算总任务数量，用于进度条显示
-        total_tasks = (len(self.dataset.test_graphs) -self.K_shot * self.dataset.test_classes_num)/(self.N_way * self.query_size)
-        
-        # 使用tqdm显示整体训练进度
-        from tqdm import tqdm
-        task_progress = tqdm(total=total_tasks, desc="Training models", position=0)
-
-        while (
-            start_test_idx
-            < len(self.dataset.test_graphs) - self.K_shot * self.dataset.test_classes_num
-        ):
-            test_acc = self.train_one_step(epoch=0, test_idx=start_test_idx)
-            test_accs.append(test_acc)
-            start_test_idx += self.N_way * self.query_size
-            
-            # 更新整体进度条
-            task_progress.update(1)
-            task_progress.set_postfix({"last_acc": f"{test_acc:.4f}", "mean_acc": f"{sum(test_accs)/len(test_accs):.4f}"})
-
-            # 计算当前准确率
-            mean_acc = sum(test_accs) / len(test_accs)
-            std = np.array(test_accs).std()
-
-            # 构建保存信息
-            save_dict = {
-                "model_config": self.config.to_dict(),
-                "log_state_dict": self.log.state_dict(),
-                "mean_acc": mean_acc,
-                "std": std,
-                "test_accs": test_accs,
-                "best_mean_acc": best_mean_acc,
-                "current_mean_acc": mean_acc,
-            }
-
-
-            # 判断并保存最佳模型
-            if mean_acc > best_mean_acc:
-                best_mean_acc = mean_acc
-                best_std = std
-                best_test_accs = test_accs.copy()
-                save_dict["best_mean_acc"] = best_mean_acc
-                os.makedirs(
-                    os.path.dirname(f"{save_dir}/best.pth"),
-                    exist_ok=True,
-                )
-                torch.save(
-                    save_dict,
-                    f"{save_dir}/best.pth",
-                )
-
-        
-        # 关闭进度条
-        task_progress.close()
-
-
-        print("Mean Test Acc {:.4f}  Std {:.4f}".format(mean_acc, std))
-        print("Best Mean Test Acc {:.4f}  Std {:.4f}".format(best_mean_acc, best_std))
-
-        return mean_acc, std
-
-    def train_one_step(self, epoch, test_idx):
+    def train_one_step(
+        self,
+        epoch,
+        test_idx,
+        model,
+        dataset,
+        device,
+        N_way,
+        K_shot,
+        query_size,
+        log_model,
+        opt,
+        num_epochs,
+        save_dir,
+        config_obj
+    ):
         """
         Train or evaluate on a single task.
 
         :param epoch: Current epoch number
         :param test_idx: Index of the test task
+        :param model: Encoder model
+        :param dataset: Dataset for sampling tasks
+        :param device: Computing device
+        :param N_way: Number of ways
+        :param K_shot: Number of shots
+        :param query_size: Size of query set
+        :param log_model: Classifier model (e.g., LogReg)
+        :param opt: Optimizer for the classifier model
+        :param config_obj: Configuration object
         :return: Accuracy for the task
         """
-        self.model.eval()
+        model.eval()
 
         # Sample one task using dataset's method
-        first_N_class_sample = np.array(list(range(self.dataset.test_classes_num)))
-        current_task = self.dataset.sample_one_task(
-            self.dataset.test_tasks,
+        first_N_class_sample = np.array(list(range(dataset.test_classes_num)))
+        current_task = dataset.sample_one_task(
+            dataset.test_tasks,
             first_N_class_sample,
-            K_shot=self.K_shot,
-            query_size=self.query_size,
+            K_shot=K_shot,
+            query_size=query_size,
             test_start_idx=test_idx,
         )
 
         # Get support set data
-        support_x = current_task["support_set"]["x"].to(self.device)
-        support_adj = current_task["support_set"]["adj"].to(self.device)
-        support_label = current_task["support_set"]["label"].to(self.device)
+        support_x = current_task["support_set"]["x"].to(device)
+        support_adj = current_task["support_set"]["adj"].to(device)
+        support_label = current_task["support_set"]["label"].to(device)
 
         # 创建支持集的数据加载器
-        support_dataset = torch.utils.data.TensorDataset(support_x, support_adj, support_label)
+        support_dataset_obj = torch.utils.data.TensorDataset(
+            support_x, support_adj, support_label
+        )  # Renamed
         support_loader = torch.utils.data.DataLoader(
-            support_dataset, batch_size=len(support_x), shuffle=False  # 可以调整批次大小
+            support_dataset_obj, batch_size=len(support_x), shuffle=False
         )
-        
-        # 使用 sampler 扩充 support_loader
-        # 创建一个临时配置对象，用于初始化 Sampler
-        from sampler import Sampler
-        import ml_collections
-        import copy
-        
-        # 创建采样器配置
-        sampler_config = copy.deepcopy(self.config)
-        
-        # 设置采样器要使用的 dataloader
-        sampler_config.dataloader = support_loader
-        
-        sampler = Sampler(sampler_config)
-        augmented_support_loader = sampler.sample(need_eval=False)
-        
-        # 将原始支持集与增强数据结合，而不是替换
-        # 从两个DataLoader中提取数据
-        augmented_x = augmented_support_loader.dataset.tensors[0]
-        augmented_adj = augmented_support_loader.dataset.tensors[1]
-        augmented_label = augmented_support_loader.dataset.tensors[2]
-        
-        # 确保所有张量都在同一个设备上 (self.device)
-        augmented_x = augmented_x.to(self.device)
-        augmented_adj = augmented_adj.to(self.device)
-        augmented_label = augmented_label.to(self.device)
-        
-        # 打印标签信息，用于调试
-        print(f"augmented_label: {augmented_label.cpu().numpy()}")
-        print(f"Augmented labels range: min={augmented_label.min().item()}, max={augmented_label.max().item()}")
-        print(f"Unique labels in augmented data: {torch.unique(augmented_label).cpu().numpy()}")
-        print(f"Expected N_way: {self.N_way}")
-        
-        # 确保标签在有效范围内 (0 到 N_way-1)
-        if augmented_label.max() >= self.N_way:
-            print(f"WARNING: Found labels outside expected range. Clamping values from range [{augmented_label.min()}, {augmented_label.max()}] to [0, {self.N_way-1}].")
-            augmented_label = torch.clamp(augmented_label, 0, self.N_way - 1)
-            print(f"After clamping - unique labels: {torch.unique(augmented_label).cpu().numpy()}")
-        
-        # 创建组合数据集
-        combined_dataset = torch.utils.data.TensorDataset(
-            augmented_x, augmented_adj, augmented_label
-        )
-        
-        # 创建新的DataLoader
-        combined_loader = torch.utils.data.DataLoader(
-            combined_dataset,
-            batch_size=len(support_x),  # 使用原始支持集的大小作为批次大小
-            shuffle=True  # 打乱数据顺序
-        )
-        
-        # 使用组合后的数据加载器
-        support_loader = combined_loader
-        print(f"Successfully combined support set: original size={len(support_dataset)}, augmented size={len(augmented_support_loader.dataset)}, combined size={len(combined_dataset)}")
+
+        # 检查是否启用采样器增强
+        if config_obj.fsl_task.get("use_sampler_augmentation", False):  # 默认为 False
+            # 使用 sampler 扩充 support_loader
+            # 创建一个临时配置对象，用于初始化 Sampler
+            from sampler import Sampler
+            import ml_collections
+            import copy
+
+            # 创建采样器配置
+            sampler_config = copy.deepcopy(config_obj)
+
+            # 设置采样器要使用的 dataloader
+            sampler_config.dataloader = support_loader
+
+            sampler = Sampler(sampler_config)
+            augmented_support_loader = sampler.sample(need_eval=False)
+
+            # 将原始支持集与增强数据结合，而不是替换
+            # 从两个DataLoader中提取数据
+            augmented_x = augmented_support_loader.dataset.tensors[0]
+            augmented_adj = augmented_support_loader.dataset.tensors[1]
+            augmented_label = augmented_support_loader.dataset.tensors[2]
+
+            # 确保所有张量都在同一个设备上 (device)
+            augmented_x = augmented_x.to(device)
+            augmented_adj = augmented_adj.to(device)
+            augmented_label = augmented_label.to(device)
+
+            # 确保标签在有效范围内 (0 到 N_way-1)
+            if augmented_label.max() >= N_way:
+                augmented_label = torch.clamp(augmented_label, 0, N_way - 1)
+
+            # 创建组合数据集
+            combined_dataset = torch.utils.data.TensorDataset(
+                augmented_x, augmented_adj, augmented_label
+            )
+
+            # 创建新的DataLoader
+            combined_loader = torch.utils.data.DataLoader(
+                combined_dataset,
+                batch_size=len(support_x),  # 使用原始支持集的大小作为批次大小
+                shuffle=True,  # 打乱数据顺序
+            )
+
+            # 使用组合后的数据加载器
+            support_loader = combined_loader
 
 
-        # 初始化分类器训练参数
-        self.log.train()  # 设置为训练模式
-        # best_loss = 1e9
-        # wait = 0
-        # patience = 10
+        log_model.train()
+        best_loss = float('inf')
+        wait = 0
+        patience = 20  # 可根据需要调整
+        
+        # 使用传入的 save_dir 作为保存目录
+        os.makedirs(save_dir, exist_ok=True)
+        best_model_path = os.path.join(save_dir, f"{config_obj.data.name}_lr.pkl")
 
-        # 对每个批次依次处理：先计算embedding，然后针对该批次进行多轮训练
         for batch_x, batch_adj, batch_label in support_loader:
-            # 为整个批次计算 node_mask
             node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
-
             with torch.no_grad():
-                # 计算当前批次的嵌入
-                posterior = self.model(batch_x, batch_adj, node_masks)
+                posterior = model(batch_x, batch_adj, node_masks)
                 graph_embs = posterior.mode()
-
-                # 处理维度，确保得到正确的图嵌入
                 if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
                     graph_embs = graph_embs.squeeze(1)
+                batch_embeddings = graph_embs.mean(dim=1)
 
-                # 对每个图的节点嵌入取平均，得到图级嵌入
-                batch_embeddings = graph_embs.mean(dim=1)  # 在节点维度上平均
-
-            # 对当前批次的嵌入训练多轮
-            from tqdm import trange
-            
-            # 使用配置文件中的训练轮次
-            num_epochs = self.config.train.num_epochs
-            
-            # 使用tqdm显示训练进度
-            for _ in trange(num_epochs, desc="Training batch", leave=False):
-                self.opt.zero_grad()
-                logits = self.log(batch_embeddings)
-                
-                # 计算损失
-                loss = F.cross_entropy(logits, batch_label.long())
-                
-                # 添加L2正则化
-                l2_reg = torch.tensor(0.0).to(self.device)
-                for param in self.log.parameters():
+            for _ in range(num_epochs):
+                opt.zero_grad()
+                logits = log_model(batch_embeddings)
+                loss = torch.nn.functional.cross_entropy(logits, batch_label.long())
+                l2_reg = torch.tensor(0.0).to(device)
+                for param in log_model.parameters():
                     l2_reg += torch.norm(param)
                 loss = loss + 0.1 * l2_reg
-                
-                # 反向传播和优化
                 loss.backward()
-                self.opt.step()
-                
-                # 保存最新的模型权重
-                torch.save(self.log.state_dict(), f"./savepoint/{self.config.data.name}_lr.pkl")
-        
+                opt.step()
+
+                # Early stopping
+                if loss.item() < best_loss:
+                    best_loss = loss.item()
+                    wait = 0
+                    torch.save(log_model.state_dict(), best_model_path) # 使用新的路径
+                else:
+                    wait += 1
+                if wait > patience:
+
+                    break
+
+        # 恢复最优模型参数
+        # 确保在加载前检查文件是否存在，以增加稳健性
+        if os.path.exists(best_model_path):
+            log_model.load_state_dict(torch.load(best_model_path)) # 使用新的路径
+
         # 评估阶段
-        self.log.eval()
+        log_model.eval()
 
         # Get query set data
-        query_x = current_task["query_set"]["x"].to(self.device)
-        query_adj = current_task["query_set"]["adj"].to(self.device)
-        query_label = current_task["query_set"]["label"].to(self.device)
+        query_x = current_task["query_set"]["x"].to(device)
+        query_adj = current_task["query_set"]["adj"].to(device)
+        query_label = current_task["query_set"]["label"].to(device)
 
         # 创建查询集的数据加载器
-        query_dataset = torch.utils.data.TensorDataset(query_x, query_adj, query_label)
+        query_dataset_obj = torch.utils.data.TensorDataset(
+            query_x, query_adj, query_label
+        )  # Renamed
 
         # 处理可能的append_count
         query_len = query_label.shape[0]
         effective_len = query_len
         if current_task["append_count"] != 0:
             effective_len = query_len - current_task["append_count"]
-            query_dataset = torch.utils.data.TensorDataset(
-                query_x[:effective_len], query_adj[:effective_len], query_label[:effective_len]
+            query_dataset_obj = torch.utils.data.TensorDataset(  # Renamed
+                query_x[:effective_len],
+                query_adj[:effective_len],
+                query_label[:effective_len],
             )
 
         query_loader = torch.utils.data.DataLoader(
-            query_dataset, batch_size=effective_len, shuffle=False  # 可以调整批次大小
+            query_dataset_obj, batch_size=effective_len, shuffle=False  # Renamed
         )
 
         # Process query set as batches
@@ -914,7 +742,7 @@ class Trainer(object):
 
             with torch.no_grad():
                 # 直接处理整个批次
-                posterior = self.model(batch_x, batch_adj, node_masks)
+                posterior = model(batch_x, batch_adj, node_masks)
                 graph_embs = posterior.mode()
 
                 # 处理维度
@@ -930,12 +758,78 @@ class Trainer(object):
         # Concatenate all batch results
         query_data = torch.cat(query_data, dim=0)
         query_labels = query_label[:effective_len]  # 只使用有效部分的标签
+        # Output query set predictions and true labels
 
         # Calculate accuracy
-        logits = self.log(query_data)
+        logits = log_model(query_data)
         preds = torch.argmax(logits, dim=1)
         acc = torch.sum(preds == query_labels).float() / query_labels.shape[0]
-
         test_acc = acc.cpu().numpy()
-
         return test_acc
+
+    def fsl_test(self, epoch, save_dir):
+        """
+        Performs Few-Shot Learning (FSL) evaluation for the current epoch.
+
+        Args:
+            epoch (int): The current training epoch.
+
+        Returns:
+            tuple: (mean_fsl_acc_epoch, std_fsl_acc_epoch, best_fsl_acc_epoch)
+                   mean_fsl_acc_epoch (float): Mean FSL accuracy for the current epoch.
+                   std_fsl_acc_epoch (float): Std of FSL accuracy for the current epoch.
+        """
+        # Initialize classifier and optimizer for FSL evaluation for this epoch
+        ft_in = self.config.model.dim  # Ensure this uses .dim for correct feature size
+        nb_classes = self.N_way
+        fsl_log_model = LogReg(ft_in, nb_classes).to(self.device)
+        fsl_opt = torch.optim.Adam(fsl_log_model.parameters(), lr=self.config.train.lr)
+
+        current_epoch_fsl_accs = []
+        start_test_idx = 0
+
+        # 计算总任务数量，用于进度条显示
+        total_test_graphs = len(self.dataset.test_graphs)
+        total_test_classes = self.dataset.test_classes_num
+        total_tasks = (total_test_graphs - self.K_shot * total_test_classes) // (
+            self.N_way * self.query_size
+        )
+        if total_tasks > 0:
+            task_progress_desc = f"[Epoch {epoch} FSL Eval]"
+            tasks_done_count = 0
+            pbar = tqdm(total=total_tasks, desc=task_progress_desc, leave=False, dynamic_ncols=True)
+            while (
+                start_test_idx
+                < len(self.dataset.test_graphs)
+                - self.K_shot * self.dataset.test_classes_num
+            ) and (tasks_done_count < total_tasks):
+                task_acc = self.train_one_step(
+                    epoch=epoch,
+                    test_idx=start_test_idx,
+                    model=self.encoder,
+                    dataset=self.dataset,
+                    device=self.device,
+                    N_way=self.N_way,
+                    K_shot=self.K_shot,
+                    query_size=self.query_size,
+                    log_model=fsl_log_model,
+                    opt=fsl_opt,
+                    num_epochs=self.config.fsl_task.num_epochs,
+                    save_dir=save_dir,
+                    config_obj=self.config,
+                )
+                current_epoch_fsl_accs.append(task_acc)
+                start_test_idx += self.N_way * self.query_size
+                tasks_done_count += 1
+                pbar.update(1)
+            pbar.close()
+        elif len(self.dataset.test_graphs) > 0 and total_tasks == 0:
+            print(
+                f"Warning: Not enough data for a full FSL evaluation task batch in epoch {epoch} (total_tasks = {total_tasks})."
+            )
+
+        mean_fsl_acc_epoch = np.mean(current_epoch_fsl_accs)
+        std_fsl_acc_epoch = np.std(current_epoch_fsl_accs)
+        best_fsl_acc_epoch = np.max(current_epoch_fsl_accs)
+
+        return mean_fsl_acc_epoch, std_fsl_acc_epoch, best_fsl_acc_epoch

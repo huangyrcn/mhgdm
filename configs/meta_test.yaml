@@ -1,7 +1,6 @@
 defaults:
-  - data : ENZYMES
+  - data : Letter_high
   - fsl_task : 10shot  # 这里选择使用哪个 FSL 任务配置
-  - model : classifier
   - train : train_fsl
   - _self_
 
@@ -11,6 +10,11 @@ timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}
 debug: false
 
+  
+ae_path: checkpoints/ENZYMES/ae_model_train/20250430_173628/best.pth
+
+
+# 通用配置
 sample:
   eps: 0.0001
   noise_removal: true

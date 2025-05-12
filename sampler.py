@@ -31,7 +31,6 @@ from utils.protos_utils import compute_protos_from
 from utils.graph_utils import node_flags
 
 
-
 class Sampler(object):
     """
     使用预训练模型生成图的采样器类。
@@ -39,19 +38,14 @@ class Sampler(object):
 
     def __init__(self, config):
 
-
         self.config = config
         self.device = load_device(config)
 
         # ---------- score_ckpt 分支 ----------
         self.independent = True
-        score_ckpt = torch.load(
-            config.score_ckpt_path, map_location=self.device, weights_only=False
-        )
+        score_ckpt = torch.load(config.score_ckpt_path, map_location=self.device)
         self.configt = ml_collections.ConfigDict(score_ckpt["model_config"])
-        self.mx = load_model_from_ckpt(
-            config, score_ckpt["params_x"], score_ckpt["x_state_dict"]
-        )
+        self.mx = load_model_from_ckpt(config, score_ckpt["params_x"], score_ckpt["x_state_dict"])
         self.ma = load_model_from_ckpt(
             config, score_ckpt["params_adj"], score_ckpt["adj_state_dict"]
         )
@@ -71,24 +65,20 @@ class Sampler(object):
         self.ma.eval()
         # 从训练配置加载随机种子
         load_seed(self.configt.seed)
-        
+
         # 如果config中有dataloader就使用config中的，否则加载新的
-        if hasattr(self.config, 'dataloader') and self.config.dataloader is not None:
+        if hasattr(self.config, "dataloader") and self.config.dataloader is not None:
             self.dataloader = self.config.dataloader
         else:
             _, self.dataloader = load_data(self.configt, get_graph_list=False)
 
-        ae_ckpt = torch.load(
-            self.config.ae_ckpt_path, map_location=self.config.device, weights_only=False
-        )
+        ae_ckpt = torch.load(self.config.ae_ckpt_path, map_location=self.config.device)
         AE_state_dict = ae_ckpt["ae_state_dict"]
         AE_config = ml_collections.ConfigDict(ae_ckpt["model_config"])
         ae = HVAE(AE_config)
         ae.load_state_dict(AE_state_dict, strict=False)
-        for p in ae.encoder.parameters():
-            p.requires_grad = False
+        ae.encoder.requires_grad_(False)
         self.encoder = ae.encoder.to(self.device).eval()
-        del ae.decoder
 
         self.protos = compute_protos_from(self.encoder, self.dataloader, self.device)
 
@@ -114,7 +104,6 @@ class Sampler(object):
         # 记录采样特定配置
         sample_log(self.logger, self.config)
 
-
     def sample(self, need_eval=True):
         """
         按batch采样，每个batch独立生成。
@@ -139,31 +128,41 @@ class Sampler(object):
 
         gen_graph_list = []
         graph_ref_list = []
-        
+
         # 存储k-augmented数据
         k_augment = self.config.sample.k_augment
         augmented_x_list = []
         augmented_adj_list = []
         augmented_labels_list = []
-        
+
         with torch.no_grad():  # 采样阶段禁用梯度计算
             for r, batch in enumerate(self.dataloader):
                 x_real, adj_real, labels = load_batch(batch, self.device)
                 t_start = time.time()
 
-                current_batch_size = adj_real.shape[0]   # 直接取当前batch大小
-                shape_x = (current_batch_size, self.config.data.max_node_num, self.config.data.max_feat_num)
-                shape_adj = (current_batch_size, self.config.data.max_node_num, self.config.data.max_node_num)
-                
+                current_batch_size = adj_real.shape[0]  # 直接取当前batch大小
+                shape_x = (
+                    current_batch_size,
+                    self.config.data.max_node_num,
+                    self.config.data.max_feat_num,
+                )
+                shape_adj = (
+                    current_batch_size,
+                    self.config.data.max_node_num,
+                    self.config.data.max_node_num,
+                )
+
                 # 为每个原始样本生成k个增强样本
                 for _ in range(k_augment):
-                    x_gen, adj_gen = self.sampling_fn(self.mx, self.ma, shape_x, shape_adj, labels, self.protos)
-                    
+                    x_gen, adj_gen = self.sampling_fn(
+                        self.mx, self.ma, shape_x, shape_adj, labels, self.protos
+                    )
+
                     # 添加到增强数据集
                     augmented_x_list.append(x_gen)
                     augmented_adj_list.append(adj_gen)
                     augmented_labels_list.append(labels)
-                
+
                 # 添加原始数据到增强数据集
                 augmented_x_list.append(x_real)
                 augmented_adj_list.append(adj_real)
@@ -175,7 +174,7 @@ class Sampler(object):
                 if need_eval:
                     samples_int = quantize(adj_gen)
                     gen_graph_list.extend(adjs_to_graphs(samples_int, True))
-                    
+
                     adjs_real_int = quantize(adj_real)
                     graph_ref_list.extend(adjs_to_graphs(adjs_real_int, True))
 
@@ -183,21 +182,26 @@ class Sampler(object):
         augmented_x = torch.cat(augmented_x_list, dim=0)
         augmented_adj = torch.cat(augmented_adj_list, dim=0)
         augmented_labels = torch.cat(augmented_labels_list, dim=0)
-        
+
         # 创建数据集和数据加载器
         from torch.utils.data import TensorDataset, DataLoader
+
         augmented_dataset = TensorDataset(augmented_x, augmented_adj, augmented_labels)
-        batch_size = self.dataloader.batch_size if hasattr(self.dataloader, 'batch_size') else 32
+        batch_size = self.dataloader.batch_size if hasattr(self.dataloader, "batch_size") else 32
         augmented_dataloader = DataLoader(
             augmented_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=self.dataloader.num_workers if hasattr(self.dataloader, 'num_workers') else 0
+            num_workers=(
+                self.dataloader.num_workers if hasattr(self.dataloader, "num_workers") else 0
+            ),
         )
-        
+
         # 返回增强的数据加载器（如果不需要评估）
         if not need_eval:
-            self.logger.log(f"Created k-augmented dataloader with k={k_augment}, total samples: {len(augmented_dataset)}")
+            self.logger.log(
+                f"Created k-augmented dataloader with k={k_augment}, total samples: {len(augmented_dataset)}"
+            )
             return augmented_dataloader
 
         # --------- 评估 ---------
@@ -220,7 +224,7 @@ class Sampler(object):
         self.logger.log("=" * 100)
         if self.independent:
             wandb.log(result_dict, commit=True)
-            
+
         # 同时返回评估结果和增强的数据加载器
         result_dict["augmented_dataloader"] = augmented_dataloader
         return result_dict

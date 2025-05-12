@@ -15,6 +15,7 @@ from collections import defaultdict
 from sklearn.cluster import KMeans
 from torch.utils.data import Dataset, DataLoader
 from utils.graph_utils import node_flags
+from numpy.random import RandomState
 
 
 def load_data(config, get_graph_list=False):
@@ -208,7 +209,6 @@ class MyDataset:
                 all_graphs[i].label = test_classes_mapping[int(original_label)]
                 self.test_graphs.append(all_nx_graphs[i])
                 test_labels.append(all_graphs[i].label)
-        print("train_classes_num:", self.train_classes_num)
         # 转 tensor
         self.train_adjs, self.train_x = graphs_to_tensor(
             self.train_graphs, self.max_node_num, self.max_feat_num
@@ -218,7 +218,11 @@ class MyDataset:
         )
         self.train_labels = torch.LongTensor(train_labels)
         self.test_labels = torch.LongTensor(test_labels)
-        print("to tensor finished")
+
+        # 只有有 fsl_task 配置时，才执行 few-shot 相关代码
+        if not hasattr(self.config, "fsl_task"):
+            print("未检测到 fsl_task 配置，跳过 few-shot 相关初始化。")
+            return
 
         # 组织成 task 列表 (Graph对象用于sample，后续也可以升级为tensor版)
         self.train_tasks = defaultdict(list)
@@ -228,42 +232,34 @@ class MyDataset:
         self.test_tasks = defaultdict(list)
         for graph, label in zip(all_graphs, test_labels):
             self.test_tasks[label].append(graph)
-        print("task list finished")
 
         # 组织成 tensor-based task 列表
         self.train_tasks_tensor = defaultdict(list)
         self.train_indices = defaultdict(list)
         for idx, label in enumerate(self.train_labels):
             self.train_indices[label.item()].append(idx)
-        print("tensor-based train task indices finished")
 
         self.test_tasks_tensor = defaultdict(list)
         self.test_indices = defaultdict(list)
         for idx, label in enumerate(self.test_labels):
             self.test_indices[label.item()].append(idx)
-        print("tensor-based test task indices finished")
 
         # 测试用的全部 test graph (用于few-shot query pool)
         self.total_test_g_list = []
         for index in range(self.test_classes_num):
             query_pool_for_class = list(self.test_tasks[index])[self.config.fsl_task.K_shot :]
             self.total_test_g_list.extend(query_pool_for_class)
-        print("total_test_g_list finished")
 
         # 测试用的全部 test indices (用于tensor版few-shot query pool)
         self.total_test_indices = []
         for index in range(self.test_classes_num):
             query_indices = self.test_indices[index][self.config.fsl_task.K_shot :]
             self.total_test_indices.extend(query_indices)
-        print("total_test_indices finished")
-
-        from numpy.random import RandomState
 
         rd = RandomState(0)
         rd.shuffle(self.total_test_g_list)
         rd.seed(0)  # Reset seed to ensure same shuffling pattern
         rd.shuffle(self.total_test_indices)
-        print("finished")
 
     def get_loaders(self):
         train_dataset = TensorDataset(self.train_x, self.train_adjs, self.train_labels)
@@ -274,14 +270,12 @@ class MyDataset:
             batch_size=self.config.data.batch_size,
             shuffle=True,
             num_workers=8,
-            pin_memory=True,
         )
         test_loader = DataLoader(
             dataset=test_dataset,
             batch_size=self.config.data.batch_size,
             shuffle=False,
             num_workers=8,
-            pin_memory=True,
         )
         return train_loader, test_loader
 
@@ -302,111 +296,102 @@ class MyDataset:
                 - "query_set": Dict with tensors "x", "adj", "label" for query set
                 - "append_count": Number of times samples were appended
         """
-        # Determine whether we're using train or test data
-        is_train = (task_source == self.train_tasks)
-
-        # Use the appropriate tensors based on data source
+        # 确定数据源 (训练集或测试集)
+        is_train = task_source == self.train_tasks
         all_x = self.train_x if is_train else self.test_x
         all_adjs = self.train_adjs if is_train else self.test_adjs
         all_indices = self.train_indices if is_train else self.test_indices
+        n_way = len(class_index)
 
         support_indices = []
         query_indices = []
         append_count = 0
 
-        # Sample support and query indices for each class
+        # 为每个类别采样支持集
         for cls_idx in class_index:
             indices = list(all_indices[cls_idx])
-            # 确保有足够的样本用于支持集和查询集
             if len(indices) < K_shot + query_size and (is_train or test_start_idx is None):
-                print(f"警告: 类别 {cls_idx} 的样本不足 (需要 {K_shot + query_size}, 实际 {len(indices)})")
+                print(
+                    f"警告: 类别 {cls_idx} 的样本不足 (需要 {K_shot + query_size}, 实际 {len(indices)})"
+                )
 
-            # Shuffle indices for training or when test_startIdx is None
             if is_train or test_start_idx is None:
                 np.random.shuffle(indices)
-            # Sample K_shot indices for support set
-            if len(indices) < K_shot:
-                # 如果样本不足K_shot，则重复使用已有样本
-                current_support = indices * (K_shot // len(indices) + 1)
-                support_indices.extend(current_support[:K_shot])
-            else:
-                support_indices.extend(indices[:K_shot])
 
-            # Sample query_size indices for query set if not using test_startIdx
+            # 采样支持集
+            cls_support = indices[: min(K_shot, len(indices))]
+            if len(cls_support) < K_shot:
+                # 不足时重复采样
+                cls_support = (cls_support * (K_shot // len(cls_support) + 1))[:K_shot]
+            support_indices.extend(cls_support)
+
+            # 采样查询集(只在非测试模式或未指定test_start_idx时)
             if is_train or test_start_idx is None:
-                remaining_indices = indices[K_shot:]
-                if len(remaining_indices) < query_size:
-                    # 如果剩余样本不足query_size，则重复使用
-                    current_query = remaining_indices * (query_size // len(remaining_indices) + 1)
-                    query_indices.extend(current_query[:query_size])
-                else:
-                    query_indices.extend(remaining_indices[:query_size])
+                remaining = indices[min(K_shot, len(indices)) :]
+                if len(remaining) < query_size:
+                    remaining = (
+                        remaining * (query_size // len(remaining) + 1 if remaining else 1)
+                    )[:query_size]
+                query_indices.extend(remaining[:query_size])
 
-        # Handle test query set with test_startIdx
+        # 特殊处理测试查询集
+        # 这是few-shot学习中的特殊处理:
+        # 1. 训练时从各个类别的剩余样本中随机采样query样本
+        # 2. 测试时需要从全局测试池中按顺序采样，以确保不同任务间评估的公平性
+        # 3. test_start_idx参数允许从指定位置开始采样，便于执行多批次测试而不重叠
         if not is_train and test_start_idx is not None:
             query_indices = []
             for i, cls_idx in enumerate(class_index):
-                # Sample from global test pool
+                # 计算当前类别在全局测试池中的采样范围
                 start = min(test_start_idx + i * query_size, len(self.total_test_indices))
-                end = min(test_start_idx + (i + 1) * query_size, len(self.total_test_indices))
+                end = min(start + query_size, len(self.total_test_indices))
                 current_indices = self.total_test_indices[start:end]
 
-                # Pad if necessary
+                # 如果样本不足，填充查询集以确保每个类别都有query_size个样本
                 while len(current_indices) < query_size:
                     if current_indices:
-                        current_indices.append(current_indices[-1])
+                        current_indices.append(current_indices[-1])  # 首选：复制最后一个样本
                     elif support_indices:
-                        current_indices.append(support_indices[0])
+                        current_indices.append(support_indices[0])  # 备选：使用支持集样本
                     else:
-                        print(f"Warning: Cannot fill query set for class {cls_idx} - insufficient data.")
+                        print(f"Warning: 无法填充类别 {cls_idx} 的查询集 - 数据不足")
                         break
-                    append_count += 1
+                    append_count += 1  # 记录填充次数，用于评估采样质量
                 query_indices.extend(current_indices)
 
-        # 确保query_indices非空
+        # 若查询集为空，则使用部分支持集
         if not query_indices:
             print("警告: 查询集为空，将使用支持集的一部分作为查询集")
-            query_indices = support_indices[:len(support_indices)//2]
-            support_indices = support_indices[len(support_indices)//2:]
+            split_point = len(support_indices) // 2
+            query_indices = support_indices[:split_point]
+            support_indices = support_indices[split_point:]
 
-        # Extract features, adjacency matrices, and create labels
+        # 提取特征和邻接矩阵
         support_x = all_x[support_indices]
         support_adj = all_adjs[support_indices]
-
         query_x = all_x[query_indices]
         query_adj = all_adjs[query_indices]
 
-        # Create labels tensors (relabeling classes from 0 to N-1)
-        n_way = len(class_index)
-        support_label = torch.zeros(len(support_indices), dtype=torch.long)
-        query_label = torch.zeros(len(query_indices), dtype=torch.long)
-
-        # 计算每个类别的样本数量
+        # 创建标签
         support_samples_per_class = len(support_indices) // n_way
         query_samples_per_class = len(query_indices) // n_way
 
-        # Assign labels (each class has same number of samples)
-        for i in range(n_way):
-            support_start = i * support_samples_per_class
-            support_end = (i + 1) * support_samples_per_class
-            if support_start < len(support_label):
-                support_label[support_start:min(support_end, len(support_label))] = i
+        support_label = torch.zeros(len(support_indices), dtype=torch.long)
+        query_label = torch.zeros(len(query_indices), dtype=torch.long)
 
-            query_start = i * query_samples_per_class
-            query_end = (i + 1) * query_samples_per_class
-            if query_start < len(query_label):
-                query_label[query_start:min(query_end, len(query_label))] = i
+        # 分配标签（每个类别有相同数量的样本）
+        for i in range(n_way):
+            s_start, s_end = i * support_samples_per_class, (i + 1) * support_samples_per_class
+            q_start, q_end = i * query_samples_per_class, (i + 1) * query_samples_per_class
+
+            if s_start < len(support_label):
+                support_label[s_start : min(s_end, len(support_label))] = i
+
+            if q_start < len(query_label):
+                query_label[q_start : min(q_end, len(query_label))] = i
 
         return {
-            "support_set": {
-                "x": support_x,
-                "adj": support_adj,
-                "label": support_label
-            },
-            "query_set": {
-                "x": query_x,
-                "adj": query_adj,
-                "label": query_label
-            },
-            "append_count": append_count
+            "support_set": {"x": support_x, "adj": support_adj, "label": support_label},
+            "query_set": {"x": query_x, "adj": query_adj, "label": query_label},
+            "append_count": append_count,
         }

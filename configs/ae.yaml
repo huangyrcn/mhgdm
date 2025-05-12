@@ -1,18 +1,19 @@
 # configs/ae.yaml
 defaults:
-  - data : Letter_high
+  - data : Reddit
   - model : ae
   - train : train_score
+  - fsl_task : 10shot  
   - _self_
 
 
 # 实验配置
-exp_name: "${model.model_type}_model_train"
+exp_name: "${data.name}_${model.model_type}_model_train"
 timestamp: ${now:%Y%m%d_%H%M%S}
 run_name: ${exp_name}_${timestamp}  # 自动组合exp_name和时间戳
 debug: false
 data:
-  batch_size: 1024
+  batch_size: 8
 model:
   use_proto_loss: true
 seed: 4
@@ -63,8 +64,9 @@ train:
   lr_decay: 0.999
   lr_schedule: true
   num_epochs: 1000
+  eval_interval: 100
   print_interval: 50
   reduce_mean: true
   save_interval: 50
   weight_decay: 0.0001
-  
+  proto_margin: 1.0

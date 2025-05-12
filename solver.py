@@ -8,7 +8,7 @@ from utils.manifolds_utils import (
     exp_after_transp0,
     transp0back_after_logmap,
     mobius_scalar_mul,
-    mobius_sub,
+    mobius_sub, 
     mobius_add,
 )
 from utils.graph_utils import mask_adjs, mask_x, gen_noise, node_flags
