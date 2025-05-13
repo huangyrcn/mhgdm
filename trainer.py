@@ -80,7 +80,7 @@ class Trainer(object):
         # -------- metrics相关初始化 --------
         self.N_way = self.config.fsl_task.N_way
         self.K_shot = self.config.fsl_task.K_shot
-        self.query_size = self.config.fsl_task.query_size
+        self.R_query = self.config.fsl_task.R_query
         best_acc = 0.0
         # -------- Training --------
         best_mean_test_loss = 1e10
@@ -159,14 +159,6 @@ class Trainer(object):
             mean_test_kl_loss = np.mean(self.test_kl_loss)
             mean_test_edge_loss = np.mean(self.test_edge_loss)
             mean_test_proto_loss = np.mean(self.test_proto_loss)
-            if (
-                "HGCN"
-                in [
-                    self.config.model.encoder,
-                    self.config.model.decoder,
-                ]
-            ) and self.config.model.learnable_c:
-                self.model.show_curvatures()
 
 
 
@@ -208,15 +200,35 @@ class Trainer(object):
 
             # -------- Metric评估 --------
             best_acc= 0.0  # Default if not evaluated in this epoch
-            if (epoch + 1) % self.config.train.eval_interval == 0 or (epoch == self.config.train.num_epochs - 1):
-                mean_acc   , std_acc, best_acc = self.fsl_test(
-                    epoch, f"{save_dir}/classifier"
+
+            eval_interval = getattr(self.config.train, 'eval_interval', None)
+            do_eval = False
+            if eval_interval is not None:
+                try:
+                    do_eval = ((epoch + 1) % eval_interval == 0)
+                except Exception:
+                    do_eval = False
+            # 如果没有设置 eval_interval，只在最后一个 epoch 评估
+            if do_eval or (epoch == self.config.train.num_epochs - 1):
+                mean_acc, std_acc, best_acc = self.meta_eval(
+                    epoch, f"{save_dir}/classifier", is_train=False
                 )
                 wandb.log(
                     {
                         "epoch": epoch,
-                        "mean_fsl_acc": mean_acc,
-                        "std_fsl_acc": std_acc,
+                        "meta_test_mean_fsl_acc": mean_acc,
+                        "meta_test_std_fsl_acc": std_acc,
+                    },
+                    commit=True,
+                )
+                mean_acc, std_acc, best_acc = self.meta_eval(
+                    epoch, f"{save_dir}/classifier", is_train=True
+                )
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "meta_train_mean_fsl_acc": mean_acc,
+                        "meta_train_std_fsl_acc": std_acc,
                     },
                     commit=True,
                 )
@@ -538,261 +550,169 @@ class Trainer(object):
         # 初始化必要的参数
         self.N_way = self.config.fsl_task.N_way
         self.K_shot = self.config.fsl_task.K_shot
-        self.query_size = self.config.fsl_task.query_size
+        self.R_query = self.config.fsl_task.R_query
 
 
 
         # 传入当前轮次(0)和初始最佳准确率(0.0)
-        mean_acc, std_acc, best_acc = self.fsl_test(epoch=0)
-        # 记录当前轮次的准确率
-        wandb.log(
-            {
-                "epoch": 0,
-                "mean_fsl_acc": mean_acc,
-                "std_fsl_acc": std_acc,
-                "best_fsl_acc": best_acc,
-            },
-            commit=True,
-        )
+        save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+        os.makedirs(save_dir, exist_ok=True)
+        mean_acc, std_acc, best_acc = self.meta_eval(epoch=0, save_dir=f'{save_dir}/classifier', is_train=True)
+        print(f"Meta-test results: Mean Accuracy: {mean_acc:.4f}, Std Accuracy: {std_acc:.4f}, Best Accuracy: {best_acc:.4f}")
         return self.config.run_name
 
     def train_one_step(
-        self,
-        epoch,
-        test_idx,
-        model,
-        dataset,
-        device,
-        N_way,
-        K_shot,
-        query_size,
-        log_model,
-        opt,
-        num_epochs,
-        save_dir,
-        config_obj
-    ):
-        """
-        Train or evaluate on a single task.
+            self,
+            is_train,
+            model,
+            dataset,
+            device,
+            N_way,
+            K_shot,
+            R_query,
+            log_model,
+            opt,
+            num_epochs,
+            save_dir,
+            config_obj,
+            test_start_idx=None,
+        ):
+            model.eval()
 
-        :param epoch: Current epoch number
-        :param test_idx: Index of the test task
-        :param model: Encoder model
-        :param dataset: Dataset for sampling tasks
-        :param device: Computing device
-        :param N_way: Number of ways
-        :param K_shot: Number of shots
-        :param query_size: Size of query set
-        :param log_model: Classifier model (e.g., LogReg)
-        :param opt: Optimizer for the classifier model
-        :param config_obj: Configuration object
-        :return: Accuracy for the task
-        """
-        model.eval()
-
-        # Sample one task using dataset's method
-        first_N_class_sample = np.array(list(range(dataset.test_classes_num)))
-        current_task = dataset.sample_one_task(
-            dataset.test_tasks,
-            first_N_class_sample,
-            K_shot=K_shot,
-            query_size=query_size,
-            test_start_idx=test_idx,
-        )
-
-        # Get support set data
-        support_x = current_task["support_set"]["x"].to(device)
-        support_adj = current_task["support_set"]["adj"].to(device)
-        support_label = current_task["support_set"]["label"].to(device)
-
-        # 创建支持集的数据加载器
-        support_dataset_obj = torch.utils.data.TensorDataset(
-            support_x, support_adj, support_label
-        )  # Renamed
-        support_loader = torch.utils.data.DataLoader(
-            support_dataset_obj, batch_size=len(support_x), shuffle=False
-        )
-
-        # 检查是否启用采样器增强
-        if config_obj.fsl_task.get("use_sampler_augmentation", False):  # 默认为 False
-            # 使用 sampler 扩充 support_loader
-            # 创建一个临时配置对象，用于初始化 Sampler
-            from sampler import Sampler
-            import ml_collections
-            import copy
-
-            # 创建采样器配置
-            sampler_config = copy.deepcopy(config_obj)
-
-            # 设置采样器要使用的 dataloader
-            sampler_config.dataloader = support_loader
-
-            sampler = Sampler(sampler_config)
-            augmented_support_loader = sampler.sample(need_eval=False)
-
-            # 将原始支持集与增强数据结合，而不是替换
-            # 从两个DataLoader中提取数据
-            augmented_x = augmented_support_loader.dataset.tensors[0]
-            augmented_adj = augmented_support_loader.dataset.tensors[1]
-            augmented_label = augmented_support_loader.dataset.tensors[2]
-
-            # 确保所有张量都在同一个设备上 (device)
-            augmented_x = augmented_x.to(device)
-            augmented_adj = augmented_adj.to(device)
-            augmented_label = augmented_label.to(device)
-
-            # 确保标签在有效范围内 (0 到 N_way-1)
-            if augmented_label.max() >= N_way:
-                augmented_label = torch.clamp(augmented_label, 0, N_way - 1)
-
-            # 创建组合数据集
-            combined_dataset = torch.utils.data.TensorDataset(
-                augmented_x, augmented_adj, augmented_label
+            # 采样一个 few-shot 任务
+            sample_kwargs = dict(
+                is_train=is_train,
+                N_way=N_way,
+                K_shot=K_shot,
+                R_query=R_query,
             )
+            if (not is_train) and (test_start_idx is not None):
+                sample_kwargs['test_start_idx'] = test_start_idx
+            current_task = dataset.sample_one_task(**sample_kwargs)
 
-            # 创建新的DataLoader
-            combined_loader = torch.utils.data.DataLoader(
-                combined_dataset,
-                batch_size=len(support_x),  # 使用原始支持集的大小作为批次大小
-                shuffle=True,  # 打乱数据顺序
-            )
+            # 支持集
+            support_x = current_task["support_set"]["x"].to(device)
+            support_adj = current_task["support_set"]["adj"].to(device)
+            support_label = current_task["support_set"]["label"].to(device)
+            support_dataset_obj = torch.utils.data.TensorDataset(support_x, support_adj, support_label)
+            support_loader = torch.utils.data.DataLoader(support_dataset_obj, batch_size=len(support_x), shuffle=False)
 
-            # 使用组合后的数据加载器
-            support_loader = combined_loader
+            # 可选：采样器增强
+            if config_obj.fsl_task.get("use_sampler_augmentation", False):
+                from sampler import Sampler
+                import copy
+                sampler_config = copy.deepcopy(config_obj)
+                sampler_config.dataloader = support_loader
+                sampler = Sampler(sampler_config)
+                augmented_support_loader = sampler.sample(need_eval=False)
+                augmented_x = augmented_support_loader.dataset.tensors[0].to(device)
+                augmented_adj = augmented_support_loader.dataset.tensors[1].to(device)
+                augmented_label = augmented_support_loader.dataset.tensors[2].to(device)
+                if augmented_label.max() >= N_way:
+                    augmented_label = torch.clamp(augmented_label, 0, N_way - 1)
+                combined_dataset = torch.utils.data.TensorDataset(augmented_x, augmented_adj, augmented_label)
+                support_loader = torch.utils.data.DataLoader(combined_dataset, batch_size=len(support_x), shuffle=True)
 
+            # 训练线性探针
+            log_model.train()
+            best_loss = float('inf')
+            wait = 0
+            patience = 20
+            os.makedirs(save_dir, exist_ok=True)
+            best_model_path = os.path.join(save_dir, f"{config_obj.data.name}_lr.pkl")
 
-        log_model.train()
-        best_loss = float('inf')
-        wait = 0
-        patience = 20  # 可根据需要调整
-        
-        # 使用传入的 save_dir 作为保存目录
-        os.makedirs(save_dir, exist_ok=True)
-        best_model_path = os.path.join(save_dir, f"{config_obj.data.name}_lr.pkl")
+            for batch_x, batch_adj, batch_label in support_loader:
+                node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
+                with torch.no_grad():
+                    posterior = model(batch_x, batch_adj, node_masks)
+                    graph_embs = posterior.mode()
+                    if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
+                        graph_embs = graph_embs.squeeze(1)
+                    # 先将所有节点嵌入投影回欧氏空间，再做mean池化
+                    if self.encoder.manifold is not None:
+                        graph_embs = self.encoder.manifold.logmap0(graph_embs)
+                    batch_embeddings = graph_embs.mean(dim=1)
 
-        for batch_x, batch_adj, batch_label in support_loader:
-            node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
-            with torch.no_grad():
-                posterior = model(batch_x, batch_adj, node_masks)
-                graph_embs = posterior.mode()
-                if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
-                    graph_embs = graph_embs.squeeze(1)
-                batch_embeddings = graph_embs.mean(dim=1)
+                for _ in range(num_epochs):
+                    opt.zero_grad()
+                    logits = log_model(batch_embeddings)
+                    loss = torch.nn.functional.cross_entropy(logits, batch_label.long())
+                    l2_reg = torch.tensor(0.0).to(device)
+                    for param in log_model.parameters():
+                        l2_reg += torch.norm(param)
+                    loss = loss + 0.1 * l2_reg
+                    loss.backward()
+                    opt.step()
+                    if loss.item() < best_loss:
+                        best_loss = loss.item()
+                        wait = 0
+                        torch.save(log_model.state_dict(), best_model_path)
+                    else:
+                        wait += 1
+                    if wait > patience:
+                        break
 
-            for _ in range(num_epochs):
-                opt.zero_grad()
-                logits = log_model(batch_embeddings)
-                loss = torch.nn.functional.cross_entropy(logits, batch_label.long())
-                l2_reg = torch.tensor(0.0).to(device)
-                for param in log_model.parameters():
-                    l2_reg += torch.norm(param)
-                loss = loss + 0.1 * l2_reg
-                loss.backward()
-                opt.step()
+            if os.path.exists(best_model_path):
+                log_model.load_state_dict(torch.load(best_model_path, weights_only=True))
 
-                # Early stopping
-                if loss.item() < best_loss:
-                    best_loss = loss.item()
-                    wait = 0
-                    torch.save(log_model.state_dict(), best_model_path) # 使用新的路径
-                else:
-                    wait += 1
-                if wait > patience:
+            log_model.eval()
 
-                    break
+            # 查询集
+            query_x = current_task["query_set"]["x"].to(device)
+            query_adj = current_task["query_set"]["adj"].to(device)
+            query_label = current_task["query_set"]["label"].to(device)
+            query_len = query_label.shape[0]
+            effective_len = query_len
+            if current_task["append_count"] != 0:
+                effective_len = query_len - current_task["append_count"]
+                query_x = query_x[:effective_len]
+                query_adj = query_adj[:effective_len]
+                query_label = query_label[:effective_len]
+            query_dataset_obj = torch.utils.data.TensorDataset(query_x, query_adj, query_label)
+            query_loader = torch.utils.data.DataLoader(query_dataset_obj, batch_size=effective_len, shuffle=False)
 
-        # 恢复最优模型参数
-        # 确保在加载前检查文件是否存在，以增加稳健性
-        if os.path.exists(best_model_path):
-            log_model.load_state_dict(torch.load(best_model_path)) # 使用新的路径
+            query_data = []
+            for batch_x, batch_adj, batch_label in query_loader:
+                node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
+                with torch.no_grad():
+                    posterior = model(batch_x, batch_adj, node_masks)
+                    graph_embs = posterior.mode()
+                    if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
+                        graph_embs = graph_embs.squeeze(1)
+                    # 先将所有节点嵌入投影回欧氏空间，再做mean池化
+                    if self.encoder.manifold is not None:
+                        graph_embs = self.encoder.manifold.logmap0(graph_embs)
+                    batch_embeddings = graph_embs.mean(dim=1)
+                query_data.append(batch_embeddings)
+            if len(query_data) == 0:
+                raise RuntimeError("No query data was collected: query_loader is empty or query set is empty.")
+            query_data = torch.cat(query_data, dim=0)
+            query_labels = query_label[:effective_len]
+            logits = log_model(query_data)
+            preds = torch.argmax(logits, dim=1)
+            acc = torch.sum(preds == query_labels).float() / query_labels.shape[0]
+            test_acc = acc.cpu().numpy()
+            return test_acc
 
-        # 评估阶段
-        log_model.eval()
+    def meta_eval(self, epoch, save_dir, is_train=False):
 
-        # Get query set data
-        query_x = current_task["query_set"]["x"].to(device)
-        query_adj = current_task["query_set"]["adj"].to(device)
-        query_label = current_task["query_set"]["label"].to(device)
-
-        # 创建查询集的数据加载器
-        query_dataset_obj = torch.utils.data.TensorDataset(
-            query_x, query_adj, query_label
-        )  # Renamed
-
-        # 处理可能的append_count
-        query_len = query_label.shape[0]
-        effective_len = query_len
-        if current_task["append_count"] != 0:
-            effective_len = query_len - current_task["append_count"]
-            query_dataset_obj = torch.utils.data.TensorDataset(  # Renamed
-                query_x[:effective_len],
-                query_adj[:effective_len],
-                query_label[:effective_len],
-            )
-
-        query_loader = torch.utils.data.DataLoader(
-            query_dataset_obj, batch_size=effective_len, shuffle=False  # Renamed
-        )
-
-        # Process query set as batches
-        query_data = []
-        for batch_x, batch_adj, batch_label in query_loader:
-            # 为整个批次计算 node_mask
-            node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
-
-            with torch.no_grad():
-                # 直接处理整个批次
-                posterior = model(batch_x, batch_adj, node_masks)
-                graph_embs = posterior.mode()
-
-                # 处理维度
-                if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
-                    graph_embs = graph_embs.squeeze(1)
-
-                # 对每个图的节点嵌入取平均，得到图级嵌入
-                graph_embs = graph_embs.mean(dim=1)
-
-                # 添加到结果列表
-                query_data.append(graph_embs)
-
-        # Concatenate all batch results
-        query_data = torch.cat(query_data, dim=0)
-        query_labels = query_label[:effective_len]  # 只使用有效部分的标签
-        # Output query set predictions and true labels
-
-        # Calculate accuracy
-        logits = log_model(query_data)
-        preds = torch.argmax(logits, dim=1)
-        acc = torch.sum(preds == query_labels).float() / query_labels.shape[0]
-        test_acc = acc.cpu().numpy()
-        return test_acc
-
-    def fsl_test(self, epoch, save_dir):
-        """
-        Performs Few-Shot Learning (FSL) evaluation for the current epoch.
-
-        Args:
-            epoch (int): The current training epoch.
-
-        Returns:
-            tuple: (mean_fsl_acc_epoch, std_fsl_acc_epoch, best_fsl_acc_epoch)
-                   mean_fsl_acc_epoch (float): Mean FSL accuracy for the current epoch.
-                   std_fsl_acc_epoch (float): Std of FSL accuracy for the current epoch.
-        """
         # Initialize classifier and optimizer for FSL evaluation for this epoch
-        ft_in = self.config.model.dim  # Ensure this uses .dim for correct feature size
-        nb_classes = self.N_way
-        fsl_log_model = LogReg(ft_in, nb_classes).to(self.device)
+        fsl_log_model = LogReg(self.config.model.dim , self.N_way).to(self.device)
         fsl_opt = torch.optim.Adam(fsl_log_model.parameters(), lr=self.config.train.lr)
 
         current_epoch_fsl_accs = []
         start_test_idx = 0
 
-        # 计算总任务数量，用于进度条显示
-        total_test_graphs = len(self.dataset.test_graphs)
-        total_test_classes = self.dataset.test_classes_num
-        total_tasks = (total_test_graphs - self.K_shot * total_test_classes) // (
-            self.N_way * self.query_size
+        # 选择数据源
+        if is_train:
+            total_graphs = len(self.dataset.train_graphs)
+            total_classes = self.dataset.train_classes_num
+        else:
+            total_graphs = len(self.dataset.test_graphs)
+            total_classes = self.dataset.test_classes_num
+
+        total_tasks = (total_graphs - self.K_shot * total_classes) // (
+            self.N_way * self.R_query
         )
         if total_tasks > 0:
             task_progress_desc = f"[Epoch {epoch} FSL Eval]"
@@ -800,30 +720,29 @@ class Trainer(object):
             pbar = tqdm(total=total_tasks, desc=task_progress_desc, leave=False, dynamic_ncols=True)
             while (
                 start_test_idx
-                < len(self.dataset.test_graphs)
-                - self.K_shot * self.dataset.test_classes_num
+                < total_graphs - self.K_shot * total_classes
             ) and (tasks_done_count < total_tasks):
                 task_acc = self.train_one_step(
-                    epoch=epoch,
-                    test_idx=start_test_idx,
+                    is_train=is_train,
                     model=self.encoder,
                     dataset=self.dataset,
                     device=self.device,
                     N_way=self.N_way,
                     K_shot=self.K_shot,
-                    query_size=self.query_size,
+                    R_query=self.R_query,
                     log_model=fsl_log_model,
                     opt=fsl_opt,
                     num_epochs=self.config.fsl_task.num_epochs,
                     save_dir=save_dir,
                     config_obj=self.config,
+                    test_start_idx=start_test_idx,
                 )
                 current_epoch_fsl_accs.append(task_acc)
-                start_test_idx += self.N_way * self.query_size
+                start_test_idx += self.N_way * self.R_query
                 tasks_done_count += 1
                 pbar.update(1)
             pbar.close()
-        elif len(self.dataset.test_graphs) > 0 and total_tasks == 0:
+        elif total_graphs > 0 and total_tasks == 0:
             print(
                 f"Warning: Not enough data for a full FSL evaluation task batch in epoch {epoch} (total_tasks = {total_tasks})."
             )

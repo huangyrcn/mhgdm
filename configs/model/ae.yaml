@@ -3,7 +3,7 @@ encoder: HGCN
 enc_layers: 3
 decoder: HGCN
 dec_layers: 3
-layer_type: HGCN
+layer_type: HGAT
 adj: ScoreNetworkA_poincare
 x: ScoreNetworkX_poincare
 use_centroid: true

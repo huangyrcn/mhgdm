@@ -50,7 +50,7 @@ fsl:
   K_shot: 5
   N_way: 3
   P_num: 10
-  query_size: 10
+  R_query: 10
 
 model_type: ae
 

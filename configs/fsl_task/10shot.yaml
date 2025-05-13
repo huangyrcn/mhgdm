@@ -1,6 +1,6 @@
 N_way: ${data.test_class_num}  # 🔥 重点在这里
 K_shot: 10
-query_size: 10
+R_query: 10
 P_num_task: 10
 use_sampler_augmentation: false  # 控制是否使用数据增强（true启用，false禁用）
 num_epochs: 1000
