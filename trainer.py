@@ -30,11 +30,15 @@ from utils.manifolds_utils import (
     get_manifold,
 )
 from utils.data_utils import MyDataset
-from layers.Decoders import Classifier, LogReg  # 使用 LogReg 替代 Classifier
+from layers.Decoders import Classifier  # LogReg removed from import, Classifier is used
+import torch.optim as optim  # Added for classifier head optimizer
+import torch.nn as nn  # Added for loss_fn_head
+
 from sklearn.neighbors import KNeighborsClassifier
 
 
 class Trainer(object):
+
     def __init__(self, config):
         super(Trainer, self).__init__()
         self.config = config
@@ -56,7 +60,6 @@ class Trainer(object):
         self.run_name = self.config.run_name
         self.dataset = MyDataset(self.config)
 
-
     def train_ae(self):
         ts = self.config.timestamp
         print("\033[91m" + f"{self.run_name}" + "\033[0m")
@@ -76,7 +79,7 @@ class Trainer(object):
         )
         total = sum([param.nelement() for param in self.model.parameters()])
         print("Number of parameter: %.4fM" % (total / 1e6))
-        self.encoder=self.model.encoder
+        self.encoder = self.model.encoder
         # -------- metrics相关初始化 --------
         self.N_way = self.config.fsl_task.N_way
         self.K_shot = self.config.fsl_task.K_shot
@@ -97,7 +100,10 @@ class Trainer(object):
             self.test_kl_loss = []
             self.test_edge_loss = []
             self.test_rec_loss = []
-            self.test_proto_loss = []
+            self.test_base_proto_loss = []  # Added
+            self.test_sep_proto_loss = []  # Added
+            self.train_graph_classification_loss = []  # 新增：用于存储训练图分类损失
+            self.train_graph_classification_accs = []  # 新增：用于存储训练图分类准确率
             t_start = time.time()
             # train
             self.model.train()
@@ -107,17 +113,28 @@ class Trainer(object):
                     batch,
                     self.device,
                 )
+                # 添加 NaN 值检查
+
                 (
                     rec_loss,
                     kl_loss,
                     edge_loss,
-                    proto_loss,
+                    base_proto_loss,  # Changed from proto_loss
+                    sep_proto_loss,  # Added
+                    graph_classification_loss,  # ADDED
+                    acc_proto,
                 ) = self.model(x, adj, labels)
+                self.train_graph_classification_loss.append(
+                    graph_classification_loss.item()
+                )  # 新增：收集训练图分类损失
+                self.train_graph_classification_accs.append(acc_proto)  # 新增：收集训练图分类准确率
                 loss = (
-                    rec_loss
+                    self.config.train.rec_weight * rec_loss  # 为 rec_loss 添加权重
                     + self.config.train.kl_regularization * kl_loss
                     + self.config.train.edge_weight * edge_loss
-                    + self.config.train.proto_weight * proto_loss
+                    + self.config.train.base_proto_weight * base_proto_loss
+                    + self.config.train.sep_proto_weight * sep_proto_loss
+                    + self.config.train.graph_classification_weight * graph_classification_loss
                 )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
@@ -140,27 +157,46 @@ class Trainer(object):
                         rec_loss,
                         kl_loss,
                         edge_loss,
-                        proto_loss,
+                        base_proto_loss,  # Changed from proto_loss
+                        sep_proto_loss,  # Added
+                        graph_classification_loss,  # ADDED
+                        acc_proto,
                     ) = self.model(x, adj, labels)
                     loss = (
-                        rec_loss
+                        self.config.train.rec_weight * rec_loss  # 为 rec_loss 添加权重
                         + self.config.train.kl_regularization * kl_loss
                         + self.config.train.edge_weight * edge_loss
-                        + self.config.train.proto_weight * proto_loss
+                        + self.config.train.base_proto_weight * base_proto_loss
+                        + self.config.train.sep_proto_weight * sep_proto_loss
+                        + self.config.train.graph_classification_weight * graph_classification_loss
                     )
                     self.total_test_loss.append(loss.item())
                     self.test_rec_loss.append(rec_loss.item())
                     self.test_kl_loss.append(kl_loss.item())
                     self.test_edge_loss.append(edge_loss.item())
-                    self.test_proto_loss.append(proto_loss.item())
+                    self.test_base_proto_loss.append(base_proto_loss.item())  # Added
+                    self.test_sep_proto_loss.append(sep_proto_loss.item())  # Added
             mean_total_train_loss = np.mean(self.total_train_loss)
+            mean_train_graph_classification_loss = (  # 新增：计算训练图分类损失的平均值
+                np.mean(self.train_graph_classification_loss)
+                if self.train_graph_classification_loss
+                else 0.0
+            )
+            mean_train_graph_classification_acc = (  # 新增：计算训练图分类准确率的平均值
+                np.mean(self.train_graph_classification_accs)
+                if self.train_graph_classification_accs
+                else 0.0
+            )
             mean_total_test_loss = np.mean(self.total_test_loss)
             mean_test_rec_loss = np.mean(self.test_rec_loss)
             mean_test_kl_loss = np.mean(self.test_kl_loss)
             mean_test_edge_loss = np.mean(self.test_edge_loss)
-            mean_test_proto_loss = np.mean(self.test_proto_loss)
-
-
+            mean_test_base_proto_loss = (
+                np.mean(self.test_base_proto_loss) if self.test_base_proto_loss else 0.0
+            )  # Added
+            mean_test_sep_proto_loss = (
+                np.mean(self.test_sep_proto_loss) if self.test_sep_proto_loss else 0.0
+            )  # Added
 
             # -------- Save checkpoints --------
             save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
@@ -193,24 +229,27 @@ class Trainer(object):
                     "test_edge_loss": mean_test_edge_loss,
                     "test_kl_loss": mean_test_kl_loss,
                     "test_rec_loss": mean_test_rec_loss,
-                    "test_proto_loss": mean_test_proto_loss,
+                    "test_base_proto_loss": mean_test_base_proto_loss,
+                    "test_sep_proto_loss": mean_test_sep_proto_loss,
+                    "train_graph_classification_loss": mean_train_graph_classification_loss,  # 新增：记录训练图分类损失
+                    "train_graph_classification_acc": mean_train_graph_classification_acc,  # 新增：记录训练图分类准确率
                 },
                 commit=True,
             )
 
             # -------- Metric评估 --------
-            best_acc= 0.0  # Default if not evaluated in this epoch
+            best_acc = 0.0  # Default if not evaluated in this epoch
 
-            eval_interval = getattr(self.config.train, 'eval_interval', None)
+            eval_interval = getattr(self.config.train, "eval_interval", None)
             do_eval = False
             if eval_interval is not None:
                 try:
-                    do_eval = ((epoch + 1) % eval_interval == 0)
+                    do_eval = (epoch + 1) % eval_interval == 0
                 except Exception:
                     do_eval = False
             # 如果没有设置 eval_interval，只在最后一个 epoch 评估
             if do_eval or (epoch == self.config.train.num_epochs - 1):
-                mean_acc, std_acc, best_acc = self.meta_eval(
+                mean_acc, std_acc, best_acc = self.meta_eval_proto(
                     epoch, f"{save_dir}/classifier", is_train=False
                 )
                 wandb.log(
@@ -221,7 +260,7 @@ class Trainer(object):
                     },
                     commit=True,
                 )
-                mean_acc, std_acc, best_acc = self.meta_eval(
+                mean_acc, std_acc, best_acc = self.meta_eval_proto(
                     epoch, f"{save_dir}/classifier", is_train=True
                 )
                 wandb.log(
@@ -246,9 +285,7 @@ class Trainer(object):
                 self.config.model.c,
             )
         else:
-            checkpoint = torch.load(
-                self.config.model.ae_path, map_location=self.config.device
-            )
+            checkpoint = torch.load(self.config.model.ae_path, map_location=self.config.device)
             AE_state_dict = checkpoint["ae_state_dict"]
             AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
             ae = HVAE(AE_config)
@@ -426,10 +463,7 @@ class Trainer(object):
             # endregion
 
             # region -------- Log losses --------
-            if (
-                epoch % self.config.train.print_interval
-                == self.config.train.print_interval - 1
-            ):
+            if epoch % self.config.train.print_interval == self.config.train.print_interval - 1:
                 wandb.log(
                     {
                         "epoch": epoch,
@@ -462,10 +496,7 @@ class Trainer(object):
             }
 
             # 按固定间隔保存epoch检查点
-            if (
-                epoch % self.config.train.save_interval
-                == self.config.train.save_interval - 1
-            ):
+            if epoch % self.config.train.save_interval == self.config.train.save_interval - 1:
                 os.makedirs(
                     os.path.dirname(f"{save_dir}/epoch_{epoch}.pth"),
                     exist_ok=True,
@@ -535,9 +566,7 @@ class Trainer(object):
         if self.config.ae_path is None:
             raise ValueError("No autoencoder path specified in config")
 
-        checkpoint = torch.load(
-            self.config.ae_path, map_location=self.device, weights_only=False
-        )
+        checkpoint = torch.load(self.config.ae_path, map_location=self.device, weights_only=False)
         AE_state_dict = checkpoint["ae_state_dict"]
         AE_config = ml_collections.ConfigDict(checkpoint["model_config"])
         self.config.model = AE_config.model
@@ -546,160 +575,30 @@ class Trainer(object):
         ae.encoder.requires_grad_(False)
         self.encoder = ae.encoder.to(self.device).eval()
 
-
         # 初始化必要的参数
         self.N_way = self.config.fsl_task.N_way
         self.K_shot = self.config.fsl_task.K_shot
         self.R_query = self.config.fsl_task.R_query
 
-
-
         # 传入当前轮次(0)和初始最佳准确率(0.0)
-        save_dir = f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+        save_dir = (
+            f"./checkpoints/{self.config.data.name}/{self.config.exp_name}/{self.config.timestamp}"
+        )
         os.makedirs(save_dir, exist_ok=True)
-        mean_acc, std_acc, best_acc = self.meta_eval(epoch=0, save_dir=f'{save_dir}/classifier', is_train=True)
-        print(f"Meta-test results: Mean Accuracy: {mean_acc:.4f}, Std Accuracy: {std_acc:.4f}, Best Accuracy: {best_acc:.4f}")
+        mean_acc, std_acc, best_acc = self.meta_eval_proto(
+            epoch=0, save_dir=f"{save_dir}/classifier", is_train=True
+        )
+        print(
+            f"Meta-test results: Mean Accuracy: {mean_acc:.4f}, Std Accuracy: {std_acc:.4f}, Best Accuracy: {best_acc:.4f}"
+        )
         return self.config.run_name
 
-    def train_one_step(
-            self,
-            is_train,
-            model,
-            dataset,
-            device,
-            N_way,
-            K_shot,
-            R_query,
-            log_model,
-            opt,
-            num_epochs,
-            save_dir,
-            config_obj,
-            test_start_idx=None,
-        ):
-            model.eval()
+    def meta_eval_proto(self, epoch, save_dir, is_train=False):
+        """
 
-            # 采样一个 few-shot 任务
-            sample_kwargs = dict(
-                is_train=is_train,
-                N_way=N_way,
-                K_shot=K_shot,
-                R_query=R_query,
-            )
-            if (not is_train) and (test_start_idx is not None):
-                sample_kwargs['test_start_idx'] = test_start_idx
-            current_task = dataset.sample_one_task(**sample_kwargs)
-
-            # 支持集
-            support_x = current_task["support_set"]["x"].to(device)
-            support_adj = current_task["support_set"]["adj"].to(device)
-            support_label = current_task["support_set"]["label"].to(device)
-            support_dataset_obj = torch.utils.data.TensorDataset(support_x, support_adj, support_label)
-            support_loader = torch.utils.data.DataLoader(support_dataset_obj, batch_size=len(support_x), shuffle=False)
-
-            # 可选：采样器增强
-            if config_obj.fsl_task.get("use_sampler_augmentation", False):
-                from sampler import Sampler
-                import copy
-                sampler_config = copy.deepcopy(config_obj)
-                sampler_config.dataloader = support_loader
-                sampler = Sampler(sampler_config)
-                augmented_support_loader = sampler.sample(need_eval=False)
-                augmented_x = augmented_support_loader.dataset.tensors[0].to(device)
-                augmented_adj = augmented_support_loader.dataset.tensors[1].to(device)
-                augmented_label = augmented_support_loader.dataset.tensors[2].to(device)
-                if augmented_label.max() >= N_way:
-                    augmented_label = torch.clamp(augmented_label, 0, N_way - 1)
-                combined_dataset = torch.utils.data.TensorDataset(augmented_x, augmented_adj, augmented_label)
-                support_loader = torch.utils.data.DataLoader(combined_dataset, batch_size=len(support_x), shuffle=True)
-
-            # 训练线性探针
-            log_model.train()
-            best_loss = float('inf')
-            wait = 0
-            patience = 20
-            os.makedirs(save_dir, exist_ok=True)
-            best_model_path = os.path.join(save_dir, f"{config_obj.data.name}_lr.pkl")
-
-            for batch_x, batch_adj, batch_label in support_loader:
-                node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
-                with torch.no_grad():
-                    posterior = model(batch_x, batch_adj, node_masks)
-                    graph_embs = posterior.mode()
-                    if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
-                        graph_embs = graph_embs.squeeze(1)
-                    # 先将所有节点嵌入投影回欧氏空间，再做mean池化
-                    if self.encoder.manifold is not None:
-                        graph_embs = self.encoder.manifold.logmap0(graph_embs)
-                    batch_embeddings = graph_embs.mean(dim=1)
-
-                for _ in range(num_epochs):
-                    opt.zero_grad()
-                    logits = log_model(batch_embeddings)
-                    loss = torch.nn.functional.cross_entropy(logits, batch_label.long())
-                    l2_reg = torch.tensor(0.0).to(device)
-                    for param in log_model.parameters():
-                        l2_reg += torch.norm(param)
-                    loss = loss + 0.1 * l2_reg
-                    loss.backward()
-                    opt.step()
-                    if loss.item() < best_loss:
-                        best_loss = loss.item()
-                        wait = 0
-                        torch.save(log_model.state_dict(), best_model_path)
-                    else:
-                        wait += 1
-                    if wait > patience:
-                        break
-
-            if os.path.exists(best_model_path):
-                log_model.load_state_dict(torch.load(best_model_path, weights_only=True))
-
-            log_model.eval()
-
-            # 查询集
-            query_x = current_task["query_set"]["x"].to(device)
-            query_adj = current_task["query_set"]["adj"].to(device)
-            query_label = current_task["query_set"]["label"].to(device)
-            query_len = query_label.shape[0]
-            effective_len = query_len
-            if current_task["append_count"] != 0:
-                effective_len = query_len - current_task["append_count"]
-                query_x = query_x[:effective_len]
-                query_adj = query_adj[:effective_len]
-                query_label = query_label[:effective_len]
-            query_dataset_obj = torch.utils.data.TensorDataset(query_x, query_adj, query_label)
-            query_loader = torch.utils.data.DataLoader(query_dataset_obj, batch_size=effective_len, shuffle=False)
-
-            query_data = []
-            for batch_x, batch_adj, batch_label in query_loader:
-                node_masks = torch.stack([node_flags(adj) for adj in batch_adj])
-                with torch.no_grad():
-                    posterior = model(batch_x, batch_adj, node_masks)
-                    graph_embs = posterior.mode()
-                    if graph_embs.dim() == 3 and graph_embs.size(1) == 1:
-                        graph_embs = graph_embs.squeeze(1)
-                    # 先将所有节点嵌入投影回欧氏空间，再做mean池化
-                    if self.encoder.manifold is not None:
-                        graph_embs = self.encoder.manifold.logmap0(graph_embs)
-                    batch_embeddings = graph_embs.mean(dim=1)
-                query_data.append(batch_embeddings)
-            if len(query_data) == 0:
-                raise RuntimeError("No query data was collected: query_loader is empty or query set is empty.")
-            query_data = torch.cat(query_data, dim=0)
-            query_labels = query_label[:effective_len]
-            logits = log_model(query_data)
-            preds = torch.argmax(logits, dim=1)
-            acc = torch.sum(preds == query_labels).float() / query_labels.shape[0]
-            test_acc = acc.cpu().numpy()
-            return test_acc
-
-    def meta_eval(self, epoch, save_dir, is_train=False):
-
-        # Initialize classifier and optimizer for FSL evaluation for this epoch
-        fsl_log_model = LogReg(self.config.model.dim , self.N_way).to(self.device)
-        fsl_opt = torch.optim.Adam(fsl_log_model.parameters(), lr=self.config.train.lr)
-
+        元评估：使用即时训练的 Classifier 头。
+        返回(mean_acc, std_acc, best_acc_for_this_epoch_eval)
+        """
         current_epoch_fsl_accs = []
         start_test_idx = 0
 
@@ -711,33 +610,115 @@ class Trainer(object):
             total_graphs = len(self.dataset.test_graphs)
             total_classes = self.dataset.test_classes_num
 
-        total_tasks = (total_graphs - self.K_shot * total_classes) // (
-            self.N_way * self.R_query
-        )
+        total_tasks = (total_graphs - self.K_shot * total_classes) // (self.N_way * self.R_query)
         if total_tasks > 0:
-            task_progress_desc = f"[Epoch {epoch} FSL Eval]"
+            task_progress_desc = f"[Epoch {epoch} FSL Eval with Classifier Head]"  # 更新描述
             tasks_done_count = 0
             pbar = tqdm(total=total_tasks, desc=task_progress_desc, leave=False, dynamic_ncols=True)
-            while (
-                start_test_idx
-                < total_graphs - self.K_shot * total_classes
-            ) and (tasks_done_count < total_tasks):
-                task_acc = self.train_one_step(
+            while (start_test_idx < total_graphs - self.K_shot * total_classes) and (
+                tasks_done_count < total_tasks
+            ):
+                # 采样一个任务
+                sample_kwargs = dict(
                     is_train=is_train,
-                    model=self.encoder,
-                    dataset=self.dataset,
-                    device=self.device,
                     N_way=self.N_way,
                     K_shot=self.K_shot,
                     R_query=self.R_query,
-                    log_model=fsl_log_model,
-                    opt=fsl_opt,
-                    num_epochs=self.config.fsl_task.num_epochs,
-                    save_dir=save_dir,
-                    config_obj=self.config,
-                    test_start_idx=start_test_idx,
                 )
-                current_epoch_fsl_accs.append(task_acc)
+                if (not is_train) and (start_test_idx is not None):
+                    sample_kwargs["test_start_idx"] = start_test_idx
+                current_task = self.dataset.sample_one_task(**sample_kwargs)
+
+                # 支持集嵌入
+                support_x = current_task["support_set"]["x"].to(self.device)
+                support_adj = current_task["support_set"]["adj"].to(self.device)
+                support_label = current_task["support_set"]["label"].to(self.device)
+                node_masks_support = torch.stack([node_flags(adj) for adj in support_adj])
+                with torch.no_grad():
+                    posterior_support = self.encoder(support_x, support_adj, node_masks_support)
+                    emb_support = posterior_support.mode()
+                    if emb_support.dim() == 3 and emb_support.size(1) == 1:
+                        emb_support = emb_support.squeeze(1)
+                    if self.encoder.manifold is not None:
+                        emb_support = self.encoder.manifold.logmap0(emb_support)
+                    mean_mean_support = emb_support.mean(dim=1)
+                    mean_max_support = emb_support.max(dim=1).values
+                    support_emb = torch.cat([mean_mean_support, mean_max_support], dim=-1)
+
+                # 查询集嵌入
+                query_x = current_task["query_set"]["x"].to(self.device)
+                query_adj = current_task["query_set"]["adj"].to(self.device)
+                query_label = current_task["query_set"]["label"].to(self.device)
+                node_masks_query = torch.stack([node_flags(adj) for adj in query_adj])
+                with torch.no_grad():
+                    posterior_query = self.encoder(query_x, query_adj, node_masks_query)
+                    emb_query = posterior_query.mode()
+                    if emb_query.dim() == 3 and emb_query.size(1) == 1:
+                        emb_query = emb_query.squeeze(1)
+                    if self.encoder.manifold is not None:
+                        emb_query = self.encoder.manifold.logmap0(emb_query)
+                    mean_mean_query = emb_query.mean(dim=1)
+                    mean_max_query = emb_query.max(dim=1).values
+                    query_emb = torch.cat([mean_mean_query, mean_max_query], dim=-1)
+
+                # 1. 实例化 Classifier
+                # self.config.model.dim 是 GNN 编码器输出的原始嵌入维度 D_emb
+                # support_emb 和 query_emb 的维度是 2 * D_emb
+                # Classifier 的 model_dim 参数期望的是 D_emb (因为它内部会 *2)
+                original_embedding_dim = self.config.model.dim
+
+                # 从 fsl_task 配置中获取 classifier 的 dropout 和 bias
+                classifier_dropout = self.config.fsl_task.get("classifier_dropout", 0.0)
+                classifier_bias = self.config.fsl_task.get("classifier_bias", True)
+
+                classifier_head = Classifier(
+                    model_dim=original_embedding_dim,
+                    classifier_dropout=classifier_dropout,
+                    classifier_bias=classifier_bias,
+                    manifold=None,
+                    n_classes=self.N_way,
+                ).to(self.device)
+
+                # 2. 训练 Classifier
+                lr_classifier_head = self.config.fsl_task.get("lr_head", 0.01)
+                epochs_classifier_head = self.config.fsl_task.get("epochs_head", 50)
+                head_train_patience = self.config.fsl_task.get(
+                    "head_train_patience", 10
+                )  # 获取早停参数
+
+                optimizer_head = optim.Adam(classifier_head.parameters(), lr=lr_classifier_head)
+                loss_fn_head = nn.CrossEntropyLoss()
+
+                best_head_loss_for_task = float("inf")
+                patience_counter = 0
+
+                classifier_head.train()
+                for _ep in range(epochs_classifier_head):
+                    optimizer_head.zero_grad()
+                    logits_support = classifier_head.decode(support_emb.detach(), adj=None)
+                    loss = loss_fn_head(logits_support, support_label.long())
+                    loss.backward()
+                    optimizer_head.step()
+
+                    if loss.item() < best_head_loss_for_task:
+                        best_head_loss_for_task = loss.item()
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+
+                    if patience_counter >= head_train_patience:
+                        # print(f"    Early stopping training for classifier_head in task {tasks_done_count} at epoch {_ep+1}")
+                        break
+
+                # 3. 用训练好的 Classifier 进行预测
+                classifier_head.eval()
+                with torch.no_grad():
+                    logits_query = classifier_head.decode(query_emb, adj=None)
+                    preds = torch.argmax(logits_query, dim=1)
+
+                acc = (preds == query_label).float().mean().cpu().item()
+
+                current_epoch_fsl_accs.append(acc)
                 start_test_idx += self.N_way * self.R_query
                 tasks_done_count += 1
                 pbar.update(1)
@@ -747,8 +728,12 @@ class Trainer(object):
                 f"Warning: Not enough data for a full FSL evaluation task batch in epoch {epoch} (total_tasks = {total_tasks})."
             )
 
-        mean_fsl_acc_epoch = np.mean(current_epoch_fsl_accs)
-        std_fsl_acc_epoch = np.std(current_epoch_fsl_accs)
-        best_fsl_acc_epoch = np.max(current_epoch_fsl_accs)
+        mean_fsl_acc_epoch = 0.0
+        std_fsl_acc_epoch = 0.0
+        max_fsl_acc_epoch = 0.0
+        if current_epoch_fsl_accs:
+            mean_fsl_acc_epoch = np.mean(current_epoch_fsl_accs)
+            std_fsl_acc_epoch = np.std(current_epoch_fsl_accs)
+            max_fsl_acc_epoch = np.max(current_epoch_fsl_accs)
 
-        return mean_fsl_acc_epoch, std_fsl_acc_epoch, best_fsl_acc_epoch
+        return mean_fsl_acc_epoch, std_fsl_acc_epoch, max_fsl_acc_epoch

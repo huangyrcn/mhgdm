@@ -8,6 +8,7 @@ from layers.layers import get_dim_act, GCLayer, GATLayer
 import geoopt
 from utils.manifolds_utils import is_on_lorentz_manifold
 
+
 def coord2diff(x, edge_index):
     row, col = edge_index
     coord_diff = x[row] - x[col]
@@ -15,22 +16,28 @@ def coord2diff(x, edge_index):
     return torch.sqrt(radial + 1e-8)
 
 
-
-
-
 def initialization_on_manifold(x_euclidean: torch.Tensor, manifold: geoopt.Manifold):
+    if manifold is None:
+        # 欧氏空间，直接返回
+        return x_euclidean
     if isinstance(manifold, geoopt.Lorentz):
         # 限制范数，避免过大带来数值不稳定
         x_euclidean = torch.nn.functional.normalize(x_euclidean, dim=-1) * 0.1
         # 拼接时间维度为 0 的切向量
         zero_time = torch.zeros_like(x_euclidean[..., :1])
         x_tangent = torch.cat([zero_time, x_euclidean], dim=-1)  # (..., d+1)
-        return manifold.expmap0(x_tangent)
+        x_hyperbolic = manifold.expmap0(x_tangent)
+        # 确保点严格位于双曲流形上
+        x_hyperbolic = manifold.projx(x_hyperbolic)
+        return x_hyperbolic
 
     elif isinstance(manifold, geoopt.PoincareBall):
         # 控制模长避免靠近边界
         x_euclidean = torch.tanh(x_euclidean) * 0.9
-        return manifold.expmap0(x_euclidean)
+        x_hyperbolic = manifold.expmap0(x_euclidean)
+        # 确保点严格位于双曲流形上
+        x_hyperbolic = manifold.projx(x_hyperbolic)
+        return x_hyperbolic
 
     else:
         raise NotImplementedError(f"Unsupported manifold type: {type(manifold)}")
@@ -38,7 +45,7 @@ def initialization_on_manifold(x_euclidean: torch.Tensor, manifold: geoopt.Manif
 
 class Encoder(nn.Module):
     """
-    Encoder abstract class.
+    Encoder abstract class. encoder 最终返回一个 流形上的分布
     """
 
     def __init__(self, config):
@@ -57,7 +64,6 @@ class Encoder(nn.Module):
     def forward(self, x, adj, node_mask):
 
         x = self.embedding(x)
-
         x = initialization_on_manifold(x, self.manifold)
         output = self.encode(x, adj)
         mean_logvar = self.mean_logvar_net(output)

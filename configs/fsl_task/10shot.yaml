@@ -4,3 +4,8 @@ R_query: 10
 P_num_task: 10
 use_sampler_augmentation: false  # 控制是否使用数据增强（true启用，false禁用）
 num_epochs: 1000
+lr_head: 0.01  # 新增: Classifier头学习率 (建议值, 可调整)
+epochs_head: 75  # 新增: Classifier头训练周期 (建议值, 可调整)
+classifier_dropout: 0.0 # 新增: FSL Classifier头的dropout率 (建议值, 可调整)
+classifier_bias: true   # 新增: FSL Classifier头是否使用偏置 (建议值, 可调整)
+head_train_patience: 10 # 新增: Classifier头训练的早停耐心值 (建议值, 可调整)

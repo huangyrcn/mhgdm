@@ -4,7 +4,7 @@ eps: 1.0e-05
 grad_norm: 1.0
 kl_regularization: 1.0e-05
 edge_weight: 1.0e-02
-proto_weight: 1.0e-02
+proto_weight: 1.0e-01
 lr: 0.01
 lr_decay: 0.999
 lr_schedule: true

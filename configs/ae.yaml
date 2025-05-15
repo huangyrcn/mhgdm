@@ -15,6 +15,7 @@ data:
   batch_size: 1024
 model:
   use_proto_loss: true
+  pred_edge: false
 seed: 4
 device: auto
 device_count: 1
@@ -58,7 +59,9 @@ train:
   grad_norm: 1.0
   kl_regularization: 1.0e-05
   edge_weight: 1.0e-02
-  proto_weight: 1.0e-02
+  proto_weight: 1.0e-02 # This might be removed or kept depending on how you combine the losses
+  base_proto_weight: 1.0e-02 # New weight for base prototype loss
+  sep_proto_weight: 1.0e-02  # New weight for prototype separation loss
   lr: 0.01
   lr_decay: 0.999
   lr_schedule: true
@@ -70,4 +73,3 @@ train:
   weight_decay: 0.0001
   proto_margin: 1.0
 
-  

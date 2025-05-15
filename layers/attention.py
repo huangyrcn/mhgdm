@@ -1,3 +1,4 @@
+#包含了 score network使用的注意力机制
 import math
 import torch
 from torch import nn
@@ -119,6 +120,8 @@ class HAttention(torch.nn.Module):
 
         else:
             raise NotImplementedError(f'{conv} not implemented.')
+
+
 
 # -------- Layer of ScoreNetworkA --------
 class AttentionLayer(torch.nn.Module):

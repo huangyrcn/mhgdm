@@ -6,6 +6,7 @@ from layers.hyp_layers import HGCLayer, get_dim_act_curv, HGATLayer
 from layers.layers import GCLayer, get_dim_act, GATLayer
 from layers.CentroidDistance import CentroidDistance
 from torch.nn import functional as F
+from utils import manifolds_utils  # Added import
 
 
 class Decoder(nn.Module):
@@ -27,21 +28,50 @@ class Decoder(nn.Module):
         return type_pred
 
 
-# Define a 3-layer classifier directly
 class Classifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(Classifier, self).__init__()
-        # Define the layers
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
+    def __init__(
+        self, model_dim, classifier_dropout, classifier_bias, manifold=None, n_classes=None
+    ):
+        super().__init__()
+        self.manifold = manifold
 
-    def forward(self, x):
-        # Forward pass through each layer with ReLU activations
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        input_dim = model_dim * 2
+
+        final_output_dim = n_classes
+
+        classifier_dropout_rate = classifier_dropout
+        classifier_use_bias = classifier_bias
+
+        cls_layers = []
+        if classifier_dropout_rate > 0.0:
+            cls_layers.append(nn.Dropout(p=classifier_dropout_rate))
+        cls_layers.append(nn.Linear(input_dim, final_output_dim, bias=classifier_use_bias))
+
+        self.cls = nn.Sequential(*cls_layers)
+
+    def decode(self, h, adj):
+        """
+        Processes input features through manifold mapping (if any) and self.cls.
+        Returns raw class scores (logits).
+        """
+        h_processed = h
+        if self.manifold is not None:
+            # Use the manifold object's own logmap0 method
+            h_mapped_to_tangent = self.manifold.logmap0(h)
+
+            # Use the custom proj_tan0 function from manifolds_utils
+            h_processed = manifolds_utils.proj_tan0(h_mapped_to_tangent, self.manifold)
+
+        predictions = self.cls(h_processed)
+        return predictions
+
+    def forward(self, h, adj, node_mask):
+        """
+        Classifier's own forward pass.
+        Calls decode to get final predictions and then applies node_mask.
+        """
+        predictions = self.decode(h, adj)
+        return predictions * node_mask
 
 
 class GCN(Decoder):
@@ -153,14 +183,3 @@ class CentroidDecoder(Decoder):
     def decode(self, x, adj):
         output = self.centroid(x)
         return output
-
-
-class LogReg(nn.Module):
-    def __init__(self, ft_in, nb_classes):
-        super(LogReg, self).__init__()
-        self.fc = nn.Linear(ft_in, nb_classes)
-        self.bn = nn.BatchNorm1d(ft_in)
-
-    def forward(self, seq):
-        ret = self.fc(self.bn(seq))
-        return ret

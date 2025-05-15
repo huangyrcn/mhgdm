@@ -38,20 +38,46 @@ class HVAE(nn.Module):
         self.loss_fn = OneHot_CrossEntropy()
         self.manifold = self.encoder.manifold
 
-        if config.model.pred_edge:
+        # 读取新的配置项，默认为 True 以保持兼容性
+        self.pred_node_class = getattr(config.model, "pred_node_class", True)
+        self.use_kl_loss = getattr(config.model, "use_kl_loss", True)
+        self.use_base_proto_loss = getattr(config.model, "use_base_proto_loss", True)
+        self.use_sep_proto_loss = getattr(config.model, "use_sep_proto_loss", True)
+
+        self.pred_edge_enabled = getattr(config.model, "pred_edge", False)
+        self.pred_graph_class_enabled = getattr(self.config.model, "pred_graph_class", False)
+
+        if self.pred_edge_enabled:
             self.edge_predictor = FermiDiracDecoder(self.encoder.manifold)
             self.edge_loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
-        self.num_graph_classes = config.data.train_class_num  # 假设你在 config 里有 num_classes
+        self.num_graph_classes = config.data.train_class_num
         self.latent_dim = config.model.dim
+        # Revert prototype dimension to 2*latent_dim
         self.graph_prototypes = nn.Parameter(
             torch.randn(self.num_graph_classes, self.latent_dim * 2)
         )
-        # 合理初始化图类别原型参数
+        # Revert std calculation for 2*latent_dim
         std = 1.0 / ((self.latent_dim * 2) ** 0.5)
         nn.init.normal_(self.graph_prototypes, mean=0.0, std=std)
+        self.current_epoch = 0
 
-    def forward(self, x, adj, labels):
+        # Initialize graph classification head if configured
+        if self.pred_graph_class_enabled:
+            # Use the Classifier from layers.Decoders for graph-level classification
+            self.graph_classifier = Decoders.Classifier(
+                model_dim=self.config.model.dim,
+                classifier_dropout=getattr(self.config.model, "classifier_dropout", 0.0),
+                classifier_bias=getattr(self.config.model, "classifier_bias", True),
+                manifold=None,  # mean_graph is Euclidean
+                n_classes=self.num_graph_classes,  # Graph-level classes
+            )
+            self.graph_classification_loss_fn = nn.CrossEntropyLoss()
+        else:
+            self.graph_classifier = None
+            self.graph_classification_loss_fn = None
+
+    def forward(self, x, adj, labels):  # labels are graph-level labels
 
         node_mask = node_flags(adj)
         edge_mask = node_mask.unsqueeze(2) * node_mask.unsqueeze(1)
@@ -61,24 +87,121 @@ class HVAE(nn.Module):
         h = posterior.sample()
         type_pred = self.decoder(h, adj, node_mask)
 
-        kl = posterior.kl()
-
-        loss = self.loss_fn(type_pred * node_mask, x)
-
-        if self.config.model.use_proto_loss:
-            mean = posterior.mode()
-            if mean.dim() == 3 and mean.size(1) == 1:
-                mean = mean.squeeze(1)
-            mean_mean = mean.mean(dim=1)
-            mean_max = mean.max(dim=1).values
-            mean_graph = torch.cat([mean_mean, mean_max], dim=-1)  # 拼接平均池化和最大池化
-            target_prototypes = self.graph_prototypes[labels]  # (batch_size, latent_dim*2)
-            distances_to_proto = self.manifold.dist(mean_graph, target_prototypes)  # (batch_size,)
-            loss_proto = torch.mean(distances_to_proto**2)
+        if self.use_kl_loss:
+            kl = posterior.kl()
         else:
-            loss_proto = torch.tensor(0, device=x.device) 
+            kl = torch.tensor(0.0, device=x.device)
 
-        if self.config.model.pred_edge:
+        # Calculate node-level classification/reconstruction loss
+        # Based on OneHot_CrossEntropy, this is effectively a node classification loss if x is one-hot
+        if self.pred_node_class:
+            node_classification_loss = self.loss_fn(type_pred * node_mask, x)
+        else:
+            node_classification_loss = torch.tensor(0.0, device=x.device)
+
+        base_loss_proto = torch.tensor(0.0, device=x.device)
+        loss_proto_separation = torch.tensor(0.0, device=x.device)
+        mean_graph = None
+
+        # Determine if we need to compute mean_graph (for base_proto_loss or graph_classification_loss)
+        if self.use_base_proto_loss or self.pred_graph_class_enabled:
+            emb_from_posterior = posterior.mode()  # Points on the manifold or in Euclidean space
+
+            if emb_from_posterior.dim() == 2:
+                emb_for_pooling = emb_from_posterior.unsqueeze(1)
+            else:
+                emb_for_pooling = emb_from_posterior
+
+            if self.encoder.manifold is not None:
+                emb_in_tangent_space = self.encoder.manifold.logmap0(emb_for_pooling)
+            else:
+                emb_in_tangent_space = emb_for_pooling
+
+            mean_pooled_features = emb_in_tangent_space.mean(dim=1)
+            max_pooled_features = emb_in_tangent_space.max(dim=1).values
+            mean_graph = torch.cat([mean_pooled_features, max_pooled_features], dim=-1)
+
+        if self.use_base_proto_loss:
+            if mean_graph is None:
+                # This should ideally not be reached if logic for mean_graph computation is correct
+                raise ValueError(
+                    "mean_graph is None but use_base_proto_loss is True. Check mean_graph computation logic."
+                )
+            current_graph_prototypes = self.graph_prototypes
+            target_prototypes_for_batch = current_graph_prototypes[labels]
+            distances_to_target_proto_sq = torch.sum(
+                (mean_graph - target_prototypes_for_batch) ** 2, dim=-1
+            )
+            base_loss_proto = torch.mean(distances_to_target_proto_sq)
+
+        if self.use_sep_proto_loss:
+            current_graph_prototypes = self.graph_prototypes
+            if current_graph_prototypes.shape[0] > 1:  # 确保有多于一个原型才进行计算
+                # --- 新的计算方式：基于余弦相似度 ---
+                # 1. 对原型进行 L2 归一化，使其成为单位向量，只关注方向
+                prototypes_normalized = torch.nn.functional.normalize(
+                    current_graph_prototypes, p=2, dim=-1, eps=1e-12
+                )
+
+                # 2. 计算归一化后原型之间的余弦相似度矩阵
+                # (P_norm)^T * P_norm
+                # 注意：这里应该是 prototypes_normalized 和其转置的乘积
+                cosine_similarity_matrix = torch.matmul(
+                    prototypes_normalized, prototypes_normalized.transpose(-2, -1)
+                )
+
+                # 3. 创建掩码，排除对角线元素（即一个原型与自身的相似度，恒为1）
+                mask = ~torch.eye(
+                    current_graph_prototypes.shape[0],  # 使用原型数量作为维度
+                    dtype=torch.bool,
+                    device=current_graph_prototypes.device,
+                )
+
+                # 4. 获取不同原型之间的余弦相似度值
+                # cosine_similarity_matrix 的维度是 [num_prototypes, num_prototypes]
+                # mask 的维度也应该是 [num_prototypes, num_prototypes]
+                inter_proto_cosine_similarity = cosine_similarity_matrix[mask]
+
+                # 5. 损失函数是这些余弦相似度的均值。
+                # 目标是最小化这个值（即让它们方向尽可能不同，理想情况是负值或接近0）
+                loss_proto_separation = inter_proto_cosine_similarity.mean()
+                # --- 结束新的计算方式 ---
+            else:
+                # 如果只有一个原型或没有原型，则分离损失为0
+                loss_proto_separation = torch.tensor(0.0, device=x.device)
+        else:  # 如果不使用 sep_proto_loss
+            loss_proto_separation = torch.tensor(0.0, device=x.device)
+
+        # Graph classification loss calculation
+        graph_classification_loss = torch.tensor(0.0, device=x.device)
+        graph_classification_acc = 0.0
+
+        if self.pred_graph_class_enabled:
+            if mean_graph is None:
+                # This should not happen if use_graph_classifier is true due to the combined check above
+                # but as a safeguard or if logic changes:
+                raise ValueError(
+                    "mean_graph is None but pred_graph_class is True. This indicates a bug."
+                )
+            if self.graph_classifier is None or self.graph_classification_loss_fn is None:
+                raise ValueError(
+                    "Graph classifier or its loss function is not initialized. Check config for pred_graph_class."
+                )
+
+            # Get logits directly from the classifier's decode method
+            # mean_graph is [Batch, DimLatent*2], suitable as 'h' for Classifier.decode
+            # The 'adj' argument for Classifier.decode is not used by its internal cls layer.
+            graph_class_logits = self.graph_classifier.decode(mean_graph, adj=None)
+
+            graph_classification_loss = self.graph_classification_loss_fn(
+                graph_class_logits, labels
+            )
+            pred_labels_graph_classifier = torch.argmax(graph_class_logits, dim=1)
+            graph_classification_acc = (
+                (pred_labels_graph_classifier == labels).float().mean().item()
+            )
+
+        if self.pred_edge_enabled:
             triu_mask = torch.triu(edge_mask, 1)[:, :, :, None]
             edge_pred = self.edge_predictor(posterior.mode()) * triu_mask
             edge_pred = edge_pred.view(-1, 4)  # 4 for edge type
@@ -97,17 +220,18 @@ class HVAE(nn.Module):
             choose_id = torch.tensor(np.append(pos_id, neg_id))
             edge_loss = self.edge_loss_fn(edge_pred[choose_id], adj[choose_id])
         else:
-            edge_loss = torch.tensor(0, device=x.device)
+            edge_loss = torch.tensor(0.0, device=x.device)  # Ensure float tensor for consistency
 
         # 只返回各项损失分量，不在模型内部合成总损失
-        return loss / node_mask.sum(), kl.sum() / node_mask.sum(), edge_loss, loss_proto
-
-    def show_curvatures(self):
-        if self.config.model.manifold != "Euclidean":
-            c = [f"{m.k.item():.4f}" for m in self.encoder.manifolds]
-            if hasattr(self.decoder, "manifolds"):
-                c.append([f"{m.k.item():.4f}" for m in self.decoder.manifolds])
-            print(c)
+        return (
+            node_classification_loss / node_mask.sum(),
+            kl.sum() / node_mask.sum(),
+            edge_loss,
+            base_loss_proto,
+            loss_proto_separation,
+            graph_classification_loss,  # Added graph classification loss
+            graph_classification_acc,  # Added graph classification accuracy
+        )
 
 
 class FermiDiracDecoder(nn.Module):

@@ -9,7 +9,7 @@ import ml_collections
 import os
 
 
-@hydra.main(config_path="configs", config_name="ae", version_base="1.3")
+@hydra.main(config_path="configs", config_name="ae_euc", version_base="1.3")
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg, resolve=True))
     

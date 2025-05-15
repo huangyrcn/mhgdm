@@ -8,3 +8,4 @@ name: TRIANGLES
 test_class_num: 3
 test_split: 0.2
 train_class_num: 7
+graph_num: 2000
