@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 
-import layers.Decoders as Decoders
+import models.Decoders as Decoders
 
-import layers.Encoders as Encoders
+import models.Encoders as Encoders
 from torch import nn
 from utils.graph_utils import node_flags
 
@@ -64,7 +64,7 @@ class HVAE(nn.Module):
 
         # Initialize graph classification head if configured
         if self.pred_graph_class_enabled:
-            # Use the Classifier from layers.Decoders for graph-level classification
+            # Use the Classifier from models.Decoders for graph-level classification
             self.graph_classifier = Decoders.Classifier(
                 model_dim=self.config.model.dim,
                 classifier_dropout=getattr(self.config.model, "classifier_dropout", 0.0),

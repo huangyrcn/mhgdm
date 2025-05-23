@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from layers.CentroidDistance import CentroidDistance
-from layers.layers import DenseGCNConv, MLP
+from models.layers import DenseGCNConv, MLP
 from utils.model_utils import get_timestep_embedding
 from utils.graph_utils import mask_adjs, pow_tensor
 from layers.attention import AttentionLayer, HAttentionLayer

@@ -22,8 +22,7 @@ from solver import get_pc_sampler
 from evaluation.mmd import gaussian, gaussian_emd
 from utils.ema import ExponentialMovingAverage
 
-from utils.data_utils import Dataset
-from .data_utils import load_data
+
 
 import subprocess
 

@@ -30,7 +30,7 @@ from utils.manifolds_utils import (
     get_manifold,
 )
 from utils.data_utils import MyDataset
-from layers.Decoders import Classifier  # LogReg removed from import, Classifier is used
+from models.Decoders import Classifier  # LogReg removed from import, Classifier is used
 import torch.optim as optim  # Added for classifier head optimizer
 import torch.nn as nn  # Added for loss_fn_head
 

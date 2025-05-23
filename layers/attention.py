@@ -1,11 +1,11 @@
-#包含了 score network使用的注意力机制
 import math
 import torch
 from torch import nn
+from torch.nn import Parameter
 import torch.nn.functional as F
 
-from layers.hyp_layers import HGATLayer
-from layers.layers import DenseGCNConv, MLP
+from layers.hyp_layers import HGCLayer, HGATLayer
+from models.layers import DenseGCNConv, MLP
 from utils.graph_utils import mask_adjs, mask_x
 
 
@@ -70,6 +70,8 @@ class Attention(torch.nn.Module):
 
         else:
             raise NotImplementedError(f'{conv} not implemented.')
+
+
 class HAttention(torch.nn.Module):
 
     def __init__(self, in_dim, attn_dim, out_dim, num_heads=4, conv='GCN',manifold=None):
@@ -120,8 +122,6 @@ class HAttention(torch.nn.Module):
 
         else:
             raise NotImplementedError(f'{conv} not implemented.')
-
-
 
 # -------- Layer of ScoreNetworkA --------
 class AttentionLayer(torch.nn.Module):

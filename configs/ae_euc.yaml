@@ -21,12 +21,12 @@ device_count: 1 # 使用的设备数量
 model: # 模型详细配置
   # 1. 核心架构与组件 (Core Architecture & Components)
   model_type: ae                    # 模型类型：自编码器 (HVAE)
-  encoder: HGCN                      # 编码器类型：图卷积网络
+  encoder: GCN                      # 编码器类型：图卷积网络
   decoder: ${model.encoder}         # 解码器类型：与编码器相同 (GCN)
   enc_layers: 5                     # 编码器层数
   dec_layers: 3                     # 解码器层数
   # GNN组件配置 (GNN Component Configuration)
-  layer_type: HGAT     # 图层类型
+  layer_type: GAT     # 图层类型
   conv: GCN                         # 卷积方式
   aggregation_method: sum           # 特征聚合方法
   
@@ -100,7 +100,7 @@ train: # 训练相关配置
   reduce_mean: true                 # 是否对损失/指标进行平均 (通常在trainer中处理，此处配置可能为全局开关或特定用途)
   
   # 3. 训练流程控制 (Training Process Control)
-  num_epochs: 2000                  # 训练轮数
+  num_epochs: 10                 # 训练轮数
   grad_norm: 1.0                    # 梯度裁剪的范数阈值
   ema: 0.999                        # 指数移动平均 (Exponential Moving Average) 的衰减率
 
@@ -119,12 +119,13 @@ hydra:
     formatters: null
     handlers: null
     root: null
+    
     version: 1
   verbose: false
 
 # 实验追踪配置 (W&B - Weights & Biases)
 wandb:
-  no_wandb: false                   # 是否禁用wandb
+  no_wandb: true                   # 是否禁用wandb
   online: true                      # 在线模式 (false为离线记录)
   project: MHGDM                    # 项目名称
   wandb_usr: huangyr                # 用户名
