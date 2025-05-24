@@ -49,10 +49,9 @@ def transp0back_after_logmap(x, y, manifold, x_in_manifold=True, y_in_manifold=T
 
 def proj_tan0(u, manifold):
     if manifold.name == 'Lorentz':
-        narrowed = u.narrow(-1, 0, 1)
-        vals = torch.zeros_like(u)
-        vals[:, 0:1] = narrowed
-        return u - vals
+        v = u.clone()
+        v[..., 0] = 0
+        return v
     else:
         return u
 
@@ -112,27 +111,3 @@ def poincare_to_lorentz(x, m):
 
 def unsqueeze_tangent(x):
     return torch.cat((torch.zeros_like(x[..., 0]).unsqueeze(-1), x), dim=-1)
-
-
-def is_on_lorentz_manifold(x, atol=1e-5):
-    """
-    判断一个向量是否在洛伦兹流形上。
-    点需满足 <x, x>_L ≈ 1 且 x[..., 0] > 0
-    如果有nan也会输出。
-    """
-    time_sq = x[..., 0] ** 2
-    space_sq = x[..., 1:].pow(2).sum(dim=-1)
-    lorentz_inner = time_sq - space_sq  # (...,)
-
-    # 检查是否有nan
-    has_nan = torch.isnan(x).any().item()
-
-    # 判断每个点是否满足 <x, x> ≈ 1
-    inner_valid = torch.all(
-        torch.isclose(lorentz_inner, torch.tensor(1.0, device=x.device), atol=atol)
-    ).item()
-    time_positive = (x[..., 0] > 0).all().item()
-
-    result = inner_valid and time_positive and not has_nan
-    print(f"is_on_lorentz_manifold: {result}, has_nan: {has_nan}")
-    return result

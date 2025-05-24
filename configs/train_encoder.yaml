@@ -1,6 +1,6 @@
 # configs/ae.yaml
 defaults: # 默认配置，会被后续的配置覆盖
-  - data : Reddit # 默认数据集配置
+  - data : Letter_high # 默认数据集配置
   - fsl_task : 10shot  # 默认少样本学习任务配置
   - _self_ # 允许引用本文档中的其他配置
 
@@ -12,7 +12,7 @@ run_name: ${exp_name}_${timestamp}  # 运行名称，自动组合实验名称和
 debug: false # 是否开启调试模式
 
 data: # 数据相关配置
-  batch_size: 1 # 批处理大小
+  batch_size: 1024 # 批处理大小
 
 seed: 4 # 随机种子
 device: auto # 运行设备 (例如 "cuda", "cpu", "auto" 表示自动选择)

@@ -1,5 +1,4 @@
 """Abstract SDE classes, Reverse SDE, and VE/VP SDEs."""
-
 import abc
 import torch
 import numpy as np
@@ -72,7 +71,7 @@ class SDE(abc.ABC):
         dt = 1 / self.N
         drift, diffusion = self.sde(x, t)
         if self.hyp:
-            f = mobius_scalar_mul(dt, drift, self.manifold)
+            f = mobius_scalar_mul(dt, drift,self.manifold)
         else:
             f = drift * dt
         G = diffusion * torch.sqrt(torch.tensor(dt, device=t.device))
@@ -113,14 +112,13 @@ class SDE(abc.ABC):
                     # score = self.manifold.transp0(drift, score)
                     # drift = self.manifold.expmap(drift,-diffusion ** 2 * score * (0.5 if self.probability_flow else 1.))
                     drift = self.manifold.logmap0(drift)
-                    drift = self.manifold.transp0(x, drift) - diffusion**2 * score * (
-                        0.5 if self.probability_flow else 1.0
-                    )
+                    drift = self.manifold.transp0(x, drift) - diffusion ** 2 * score * (
+                        0.5 if self.probability_flow else 1.)
                 else:
-                    drift = drift - diffusion**2 * score * (0.5 if self.probability_flow else 1.0)
+                    drift = drift - diffusion ** 2 * score * (0.5 if self.probability_flow else 1.)
 
                 # Set the diffusion function to zero for ODEs.
-                diffusion = 0.0 if self.probability_flow else diffusion
+                diffusion = 0. if self.probability_flow else diffusion
                 return drift, diffusion
 
             def discretize(self, feature, x, flags, t, is_adj=True):
@@ -129,11 +127,9 @@ class SDE(abc.ABC):
                 score = score_fn(feature, x, flags, t)
                 if self.hyp:
                     f = self.manifold.logmap0(f)
-                    rev_f = self.manifold.transp0(x, f) - G**2 * score * (
-                        0.5 if self.probability_flow else 1.0
-                    )
+                    rev_f = self.manifold.transp0(x, f) - G ** 2 * score * (0.5 if self.probability_flow else 1.)
                 else:
-                    rev_f = f - G**2 * score * (0.5 if self.probability_flow else 1.0)
+                    rev_f = f - G ** 2 * score * (0.5 if self.probability_flow else 1.)
 
                 rev_G = torch.zeros_like(G) if self.probability_flow else G
                 return rev_f, rev_G
@@ -154,13 +150,11 @@ class VPSDE(SDE):
         self.beta_0 = beta_min
         self.beta_1 = beta_max
         self.N = N
-        self.discrete_betas = torch.linspace(
-            beta_min / N, beta_max / N, N
-        )  # 20/1000=0.02 0.1/1000=0.0001
-        self.alphas = 1.0 - self.discrete_betas
+        self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)# 20/1000=0.02 0.1/1000=0.0001
+        self.alphas = 1. - self.discrete_betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-        self.sqrt_1m_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
+        self.sqrt_1m_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
 
     @property
     def T(self):
@@ -169,36 +163,35 @@ class VPSDE(SDE):
     def sde(self, x, t):
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         if self.hyp:
-            drift = self.manifold.mobius_scalar_mul(-0.5 * beta_t, x)
+            drift = mobius_scalar_mul(-0.5 * beta_t, x, self.manifold)
         else:
             drift = -0.5 * beta_t * x
         diffusion = torch.sqrt(beta_t)
         return drift, diffusion
 
     def marginal_prob(self, x, t):  # t in [0,1]
-        log_mean_coeff = -0.25 * t**2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
         if self.hyp:
-            mean = self.manifold.mobius_scalar_mul(torch.exp(log_mean_coeff), x)
+            mean = mobius_scalar_mul(torch.exp(log_mean_coeff), x, self.manifold)
         else:
             mean = torch.exp(log_mean_coeff) * x
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
+        std = torch.sqrt(1. - torch.exp(2. * log_mean_coeff))
         return mean, std
 
     def prior_sampling(self, shape):
         if self.hyp:
-            return self.manifold.expmap0(torch.randn(*shape, device=self.manifold.device))
+            return self.manifold.expmap0(torch.randn(*shape,device=self.manifold.device))
         else:
             return torch.randn(*shape)
 
     def prior_sampling_sym(self, shape):
         x = torch.randn(*shape).triu(1)
         return x + x.transpose(-1, -2)
-
     # TODO hyp method
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        logps = -N / 2.0 * np.log(2 * np.pi) - torch.sum(z**2, dim=(1, 2, 3)) / 2.0
+        logps = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
         return logps
 
     def discretize(self, x, t):
@@ -209,7 +202,7 @@ class VPSDE(SDE):
         sqrt_beta = torch.sqrt(beta)
 
         if self.hyp:
-            f = mobius_scalar_mul((torch.sqrt(alpha) - 1), x, self.manifold)
+            f = mobius_scalar_mul((torch.sqrt(alpha)-1), x,self.manifold)
         else:
             f = torch.sqrt(alpha) * x - x
         G = sqrt_beta
@@ -237,25 +230,25 @@ class subVPSDE(SDE):
     def sde(self, x, t):
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         if self.hyp:
-            drift = self.manifold.mobius_scalar_mul(-0.5 * beta_t, x)
+            drift = mobius_scalar_mul(-0.5 * beta_t, x, self.manifold)
         else:
             drift = -0.5 * beta_t * x
-        discount = 1.0 - torch.exp(-2 * self.beta_0 * t - (self.beta_1 - self.beta_0) * t**2)
+        discount = 1. - torch.exp(-2 * self.beta_0 * t - (self.beta_1 - self.beta_0) * t ** 2)
         diffusion = torch.sqrt(beta_t * discount)
         return drift, diffusion
 
     def marginal_prob(self, x, t):
-        log_mean_coeff = -0.25 * t**2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
         if self.hyp:
-            mean = self.manifold.mobius_scalar_mul(torch.exp(log_mean_coeff), x)
+            mean = mobius_scalar_mul(torch.exp(log_mean_coeff), x, self.manifold)
         else:
             mean = torch.exp(log_mean_coeff) * x
-        std = 1 - torch.exp(2.0 * log_mean_coeff)
+        std = torch.sqrt(1. - torch.exp(2. * log_mean_coeff))
         return mean, std
 
     def prior_sampling(self, shape):
         if self.hyp:
-            return self.manifold.expmap0(torch.randn(*shape, device=self.manifold.device))
+            return self.manifold.expmap0(torch.randn(*shape,device=self.manifold.device))
         else:
             return torch.randn(*shape)
 
@@ -263,7 +256,7 @@ class subVPSDE(SDE):
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        return -N / 2.0 * np.log(2 * np.pi) - torch.sum(z**2, dim=(1, 2, 3)) / 2.0
+        return -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
 
 
 class VESDE(SDE):
@@ -278,9 +271,7 @@ class VESDE(SDE):
         super().__init__(N, manifold)
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
-        self.discrete_sigmas = torch.exp(
-            torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N)
-        )
+        self.discrete_sigmas = torch.exp(torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N))
         self.N = N
 
     @property
@@ -290,10 +281,10 @@ class VESDE(SDE):
     def sde(self, x, t):
         sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
         drift = torch.zeros_like(x)
-        diffusion = sigma * torch.sqrt(
-            torch.tensor(2 * (np.log(self.sigma_max) - np.log(self.sigma_min)), device=t.device)
-        )
+        diffusion = sigma * torch.sqrt(torch.tensor(2 * (np.log(self.sigma_max) - np.log(self.sigma_min)),
+                                                    device=t.device))
         return drift, diffusion
+
 
     def marginal_prob(self, x, t):
         std = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
@@ -302,9 +293,7 @@ class VESDE(SDE):
 
     def prior_sampling(self, shape):
         if self.hyp:
-            return self.manifold.expmap0(
-                torch.randn(*shape, device=self.manifold.device) * self.sigma_max
-            )
+            return self.manifold.expmap0(torch.randn(*shape,device=self.manifold.device) * self.sigma_max)
         else:
             return torch.randn(*shape) * self.sigma_max
 
@@ -313,22 +302,20 @@ class VESDE(SDE):
         x = x + x.transpose(-1, -2)
         return x
         # todo
-
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        return -N / 2.0 * np.log(2 * np.pi * self.sigma_max**2) - torch.sum(
-            z**2, dim=(1, 2, 3)
-        ) / (2 * self.sigma_max**2)
+        return -N / 2. * np.log(2 * np.pi * self.sigma_max ** 2) - torch.sum(z ** 2, dim=(1, 2, 3)) / (
+                2 * self.sigma_max ** 2)
+
 
     def discretize(self, x, t):
         """SMLD(NCSN) discretization."""
         self.discrete_sigmas = self.discrete_sigmas.to(t.device)
         timestep = (t * (self.N - 1) / self.T).long()
         sigma = self.discrete_sigmas.to(t.device)[timestep]
-        adjacent_sigma = torch.where(
-            timestep == 0, torch.zeros_like(t), self.discrete_sigmas[timestep - 1].to(t.device)
-        )
+        adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
+                                     self.discrete_sigmas[timestep - 1].to(t.device))
         f = torch.zeros_like(x)
-        G = torch.sqrt(sigma**2 - adjacent_sigma**2)
+        G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
         return f, G
