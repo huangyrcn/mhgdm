@@ -1,0 +1,5 @@
+model_class: "ScoreNetworkX_euc_proto"
+max_feat_num: 10
+depth: 5
+nhid: 32
+proto_weight: 0.3

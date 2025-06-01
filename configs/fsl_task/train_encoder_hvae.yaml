@@ -1,0 +1,37 @@
+# @package _global_
+# configs/train_encoder_hvae.yaml - HVAE Style Encoder Training Configuration
+
+defaults: # 默认配置，会被后续的配置覆盖
+  - base_config  # 引用 configs/base_config.yaml
+  - /data/Letter_high  # 默认数据集配置
+  - /fsl_task/5shot  # 默认少样本学习任务配置
+  - /train/train_encoder_hvae  # 基础训练配置（使用自编码器训练配置）
+  - /encoder/hvae_encoder # HVAE encoder config
+  - /decoder/base_hgcn_decoder # Decoder config
+  - _self_
+
+# 实验配置
+exp_name: "${data.name}_HVAE_encoder_train" # 实验名称
+timestamp: ${now:%Y%m%d_%H%M%S} # 当前时间戳
+run_name: ${exp_name}/${timestamp}  # 运行名称，自动组合实验名称和时间戳
+debug: false # 是否开启调试模式
+
+# Enable decoder for graph reconstruction
+use_decoder: true
+
+# Loss weights for different components
+train:
+  lr: 0.001
+  weight_decay: 0.0001
+  num_epochs: 500
+  eval_interval: 50
+  num_eval_tasks: 100
+  loss_weights:
+    reconstruction: 1.0  # Weight for reconstruction loss
+    kl: 0.1             # Weight for KL divergence loss
+    edge: 1.0           # Weight for edge prediction loss
+
+# 随机种子和设备配置
+seed: 1
+device: auto
+device_count: 1

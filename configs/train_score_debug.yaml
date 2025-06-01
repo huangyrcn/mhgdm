@@ -1,0 +1,77 @@
+# Debug configuration for score network training
+# @package _global_
+
+defaults:
+  - base_config
+  - /data/Letter_high
+  - _self_
+
+# 实验配置
+exp_name: "Letter_high_score_debug_test"
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_name: ${exp_name}/${timestamp}
+debug: false
+
+# 编码器路径配置
+encoder_path: "checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth"
+
+# FSL Task配置
+fsl_task:
+  n_way: 5
+  k_shot: 5
+  query_num: 15
+
+score_model_x:
+  model_class: ScoreNetworkX_poincare_proto
+  GCN_type: HGAT
+  manifold: PoincareBall
+  depth: 5
+  nhid: 32
+  edge_dim: 1
+  proto_weight: 0.1
+  
+  # Adj网络配置
+score_model_adj:
+  model_class: ScoreNetworkA_poincare_proto
+  manifold: PoincareBall
+  num_layers: 7
+  num_linears: 2
+  c_init: 2
+  c_hid: 8
+  c_final: 4
+  adim: 32
+  num_heads: 4
+  conv: GCN
+  proto_weight: 0.1
+
+# 训练配置覆盖
+train:
+  lr: 0.01
+  num_epochs: 5000
+  weight_decay: 0.0001
+  lr_decay: 0.999
+  lr_schedule: true
+  ema: 0.999
+  eps: 1.0e-05
+  grad_norm: 1.0
+  kl_regularization: 1.0e-05
+  print_interval: 100
+  reduce_mean: true
+  save_interval: 500
+
+# SDE配置
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.2
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+
+# 随机种子和设备配置
+seed: 1
+device: cuda

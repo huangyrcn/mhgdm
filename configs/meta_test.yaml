@@ -1,77 +1,80 @@
-defaults:
-  - data : Letter_high
-  - fsl_task : 10shot  # 这里选择使用哪个 FSL 任务配置
-  - train : train_fsl
+# @package _global_
+# configs/meta_test.yaml - Meta-learning test configuration
+
+defaults: # 默认配置，会被后续的配置覆盖
+  - base_config  # 引用 configs/base_config.yaml
+  - /data/Letter_high  # 默认数据集配置
+  - /fsl_task/5shot  # 默认少样本学习任务配置
   - _self_
 
 # 实验配置
-exp_name: "fsl_train"
-timestamp: ${now:%Y%m%d_%H%M%S}
-run_name: ${exp_name}_${timestamp}
-debug: false
+exp_name: "meta_test_${data.name}" # 实验名称
+timestamp: ${now:%Y%m%d_%H%M%S} # 当前时间戳
+run_name: ${exp_name}/${timestamp}  # 运行名称，自动组合实验名称和时间戳
+debug: false # 是否开启调试模式
 
-  
-ae_path: checkpoints/Letter_high/Letter_high_ae_model_train/20250513_150042/best.pth
+# 模型路径配置
+model_paths:
+  encoder_ckpt_path: "checkpoints/Letter_high/Letter_high_HGCN_encoder_train_20250524_200604/best.pth"  # 预训练编码器检查点路径
+  score_ckpt_path: "checkpoints/Letter_high/Letter_high_score_network_proto_train_hgcn/20250525_000726/best.pth"    # 预训练分数模型检查点路径
 
+# 数据增强配置
+data_augmentation:
+  use_score_model: true     # 是否使用分数模型进行数据增强
+  k_augment: 2              # 每个样本生成的增强样本数量
+  augment_mode: "prototype" # 增强模式: "prototype", "random", "interpolation"
 
-# 通用配置
-sample:
-  eps: 0.0001
-  noise_removal: true
-  probability_flow: false
-  seed: 1
-  use_ema: true
-  k_augment: 1
-
+# 采样配置 (仅当use_score_model=true时使用)
 sampler:
-  corrector: Langevin
-  n_steps: 1
-  predictor: Euler
-  scale_eps_A: 1.0
+  predictor: reverse_diffusion
+  corrector: none
+  snr_x: 0.15
+  snr_A: 0.15
   scale_eps_x: 1.0
-  snr_A: 0.25
-  snr_x: 0.25
-  proto_guide: true
+  scale_eps_A: 1.0
+  n_steps: 1000
+  probability_flow: False
+
+sample:
+  use_ema: true
+  noise_removal: true
+  sample_method: ddpm
+
+# 元测试配置
+meta_test:
+  num_test_tasks: 600        # 测试任务数量
+  eval_support: true         # 是否在支持集上评估
+  eval_query: true           # 是否在查询集上评估
   
-ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250430_173628/best.pth
-score_ckpt_path: checkpoints/ENZYMES/score_model_train/20250506_122017/best.pth
+  # 分类头训练配置
+  classifier:
+    epochs: 100              # 分类头训练轮数
+    lr: 0.01                 # 分类头学习率
+    patience: 20             # 早停patience
+    dropout: 0.0             # dropout率
+    bias: true               # 是否使用bias
+    optimizer: "Adam"        # 优化器类型
+    weight_decay: 0.0        # 权重衰减
+    
+  # 嵌入处理配置
+  embedding:
+    pooling_method: "mean_max" # 池化方法: "mean", "max", "mean_max", "attention"
+    normalize: false         # 是否标准化嵌入
+    pca_dim: null           # PCA降维维度 (null表示不降维)
 
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "f1", "precision", "recall"]  # 评估指标
+  confidence_interval: 0.95  # 置信区间
+  save_predictions: false    # 是否保存预测结果
+  save_embeddings: false     # 是否保存嵌入向量
 
-# 基本配置
-seed: 4
-device: auto
-device_count: 1
+# 日志配置
+logging:
+  log_interval: 10          # 日志记录间隔
+  save_best_model: true     # 是否保存最佳模型
+  log_confusion_matrix: true # 是否记录混淆矩阵
 
-# Hydra配置
-hydra:
-  run:
-    dir: .
-  output_subdir: null
-  job_logging:
-    disable_existing_loggers: False
-    formatters: null
-    handlers: null
-    root: null
-    version: 1
-  verbose: false
-
-# Wandb配置
-wandb:
-  no_wandb: false
-  online: true
-  project: MHGDM
-  wandb_usr: huangyr
-  entity: huangyr_team
-
-sde:
-  adj:
-    beta_max: 1.0
-    beta_min: 0.2
-    num_scales: 1000
-    type: VE
-  x:
-    beta_max: 1.0
-    beta_min: 0.1
-    num_scales: 1000
-    type: VP
-
+seed: 42 # 随机种子
+device: auto # 运行设备 (例如 "cuda", "cpu", "auto" 表示自动选择)
+device_count: 1 # 使用的设备数量

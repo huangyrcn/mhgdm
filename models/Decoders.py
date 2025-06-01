@@ -12,12 +12,13 @@ class Decoder(nn.Module):
     Decoder abstract class
     """
 
-    def __init__(self, config):
+    def __init__(self, max_feat_num, hidden_dim):
         super(Decoder, self).__init__()
-        self.config = config
-        # self.expand_dim = nn.Linear(config.model.dim, config.model.hidden_dim)
+        self.max_feat_num = max_feat_num
+        self.hidden_dim = hidden_dim
+        # self.expand_dim = nn.Linear(dim, hidden_dim)
         self.out = nn.Sequential(
-            nn.Linear(config.model.hidden_dim, config.data.max_feat_num),  # CrossEntropyLoss 内置了Softmax
+            nn.Linear(hidden_dim, max_feat_num),  # CrossEntropyLoss 内置了Softmax
         )
 
         # self.reset_parameters()
@@ -32,6 +33,30 @@ class Decoder(nn.Module):
         type_pred = self.out(output)*node_mask
         return type_pred
 
+class FermiDiracDecoder(nn.Module):
+    """Fermi Dirac to compute edge probabilities based on distances."""
+
+    def __init__(self, manifold):
+        super(FermiDiracDecoder, self).__init__()
+        self.manifold = manifold
+        self.r = nn.Parameter(torch.ones((3,), dtype=torch.float))
+        self.t = nn.Parameter(torch.ones((3,), dtype=torch.float))
+
+    def forward(self, x):
+        b, n, _ = x.size()
+        x_left = x[:, :, None, :]
+        x_right = x[:, None, :, :]
+        if self.manifold is not None:
+            dist = self.manifold.dist(x_left, x_right, keepdim=True)
+        else:
+            dist = torch.pairwise_distance(x_left, x_right, keepdim=True)  # (B,N,N,1)
+        edge_type = 1.0 / (
+            torch.exp((dist - self.r[None, None, None, :]) * self.t[None, None, None, :]) + 1.0
+        )  # 对分子 改成3键 乘法变除法防止NaN
+        noEdge = 1.0 - edge_type.max(dim=-1, keepdim=True)[0]
+        edge_type = torch.cat([noEdge, edge_type], dim=-1)
+        return edge_type
+
 
 class Classifier(nn.Module):
     def __init__(
@@ -42,15 +67,10 @@ class Classifier(nn.Module):
 
         input_dim = model_dim * 2
 
-        final_output_dim = n_classes
-
-        classifier_dropout_rate = classifier_dropout
-        classifier_use_bias = classifier_bias
-
         cls_layers = []
-        if classifier_dropout_rate > 0.0:
-            cls_layers.append(nn.Dropout(p=classifier_dropout_rate))
-        cls_layers.append(nn.Linear(input_dim, final_output_dim, bias=classifier_use_bias))
+        if classifier_dropout > 0.0:
+            cls_layers.append(nn.Dropout(p=classifier_dropout))
+        cls_layers.append(nn.Linear(input_dim, n_classes, bias=classifier_bias))
 
         self.cls = nn.Sequential(*cls_layers)
 
@@ -83,25 +103,32 @@ class GCN(Decoder):
     Graph Convolution Decoder.
     """
 
-    def __init__(self, config):
-        super(GCN, self).__init__(config)
-        dims, acts = get_dim_act(config, config.model.dec_layers, enc=False)
+    def __init__(self, max_feat_num, hidden_dim, dec_layers, layer_type, dropout,
+                 edge_dim, normalization_factor, aggregation_method, msg_transform):
+        super(GCN, self).__init__(max_feat_num, hidden_dim)
+        dims, acts = get_dim_act(
+            hidden_dim=hidden_dim, 
+            act_name='ReLU', 
+            num_layers=dec_layers, 
+            enc=False, 
+            dim=max_feat_num
+        )
         self.manifolds = None
         gc_layers = []
-        if config.model.layer_type == 'GCN':
-            layer_type = GCLayer
-        elif config.model.layer_type == 'GAT':
-            layer_type = GATLayer
+        if layer_type == 'GCN':
+            layer_type_class = GCLayer
+        elif layer_type == 'GAT':
+            layer_type_class = GATLayer
         else:
-            raise AttributeError
-        for i in range(config.model.dec_layers):
+            raise AttributeError(f"Unknown layer_type: {layer_type}")
+        for i in range(dec_layers):
             in_dim, out_dim = dims[i], dims[i + 1]
             act = acts[i]
             gc_layers.append(
-                layer_type(
-                    in_dim, out_dim, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.aggregation_method, config.model.msg_transform
+                layer_type_class(
+                    in_dim, out_dim, dropout, act, edge_dim,
+                    normalization_factor, aggregation_method,
+                    msg_transform
                 )
             )
         self.layers = nn.Sequential(*gc_layers)
@@ -115,40 +142,53 @@ class HGCN(Decoder):
     Decoder for HGCAE
     """
 
-    def __init__(self, config, manifold=None):
-        super(HGCN, self).__init__(config)
-        dims, acts, self.manifolds = get_dim_act_curv(config, config.model.dec_layers, enc=False)
-        if manifold is not None:
-            self.manifolds[0] = manifold
+    def __init__(self, max_feat_num, hidden_dim, dec_layers, layer_type, dropout,
+                 edge_dim, normalization_factor, aggregation_method, msg_transform,
+                 sum_transform, use_norm, manifold, c, learnable_c, use_centroid=False,
+                 input_manifold=None):
+        super(HGCN, self).__init__(max_feat_num, hidden_dim)
+        dims, acts, self.manifolds = get_dim_act_curv(
+            hidden_dim=hidden_dim,
+            dim=max_feat_num,  # For decoder, this would be the output feature dimension
+            manifold_name=manifold,
+            c=c,
+            learnable_c=learnable_c,
+            act_name='ReLU',
+            num_layers=dec_layers,
+            enc=False
+        )
+        if input_manifold is not None:
+            self.manifolds[0] = input_manifold
         self.manifold = self.manifolds[-1]
         hgc_layers = []
-        if config.model.layer_type == 'HGCN':
-            layer_type = HGCLayer
-        elif config.model.layer_type == 'HGAT':
-            layer_type = HGATLayer
+        if layer_type == 'HGCN':
+            layer_type_class = HGCLayer
+        elif layer_type == 'HGAT':
+            layer_type_class = HGATLayer
         else:
-            raise AttributeError
-        for i in range(config.model.dec_layers):
+            raise AttributeError(f"Unknown layer_type: {layer_type}")
+        for i in range(dec_layers):
             m_in, m_out = self.manifolds[i], self.manifolds[i + 1]
             in_dim, out_dim = dims[i], dims[i + 1]
             act = acts[i]
             hgc_layers.append(
-                layer_type(
-                    in_dim, out_dim, m_in, m_out, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.msg_transform, config.model.sum_transform, config.model.use_norm
+                layer_type_class(
+                    in_dim, out_dim, m_in, m_out, dropout, act, edge_dim,
+                    normalization_factor, aggregation_method,
+                    msg_transform, sum_transform, use_norm
                 )
             )
-        if config.model.use_centroid:
-            self.centroid = CentroidDistance(dims[-1], dims[-1], self.manifold, config.model.dropout)
+        if use_centroid:
+            self.centroid = CentroidDistance(dims[-1], dims[-1], self.manifold, dropout)
         self.layers = nn.Sequential(*hgc_layers)
         self.message_passing = True
+        self.use_centroid = use_centroid
 
     def decode(self, x, adj):
         # x = proj_tan0(x, self.manifolds[0])
         # x = self.manifolds[0].expmap0(x)
         output,_ = self.layers((x,adj))
-        if self.config.model.use_centroid:
+        if self.use_centroid:
             output = self.centroid(output)
         else:
             output = self.manifolds[-1].logmap0(output)
@@ -159,10 +199,10 @@ class CentroidDecoder(Decoder):
     Decoder for HGCAE
     """
 
-    def __init__(self, config, manifold=None):
-        super(CentroidDecoder, self).__init__(config)
+    def __init__(self, max_feat_num, hidden_dim, dim, manifold, dropout):
+        super(CentroidDecoder, self).__init__(max_feat_num, hidden_dim)
         self.manifold = manifold
-        self.centroid = CentroidDistance(config.model.hidden_dim, config.model.dim, self.manifold, config.model.dropout)
+        self.centroid = CentroidDistance(hidden_dim, dim, self.manifold, dropout)
         self.message_passing = True
 
     def decode(self, x, adj):

@@ -21,6 +21,9 @@ import torch
 from utils import sde_lib
 import numpy as np
 
+import models.Encoders as Encoders
+import models.Decoders as Decoders
+
 
 _MODELS = {}
 
@@ -44,6 +47,7 @@ def get_timestep_embedding(timesteps, embedding_dim):
     if embedding_dim % 2 == 1:  # zero pad
         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
     return emb
+
 
 def register_model(cls=None, *, name=None):
     """A decorator for registering model classes."""
@@ -207,3 +211,122 @@ def to_flattened_numpy(x):
 def from_flattened_numpy(x, shape):
     """Form a torch tensor with the given `shape` from a flattened numpy array `x`."""
     return torch.from_numpy(x.reshape(shape))
+
+
+def extract_encoder_params(config):
+    """Extract encoder parameters from config object."""
+    model_config = config.model
+    
+    # Base encoder parameters
+    encoder_params = {
+        'max_feat_num': model_config.max_feat_num,
+        'hidden_dim': model_config.hidden_dim,
+        'dim': model_config.dim
+    }
+    
+    # Add specific parameters based on encoder type
+    encoder_type = model_config.encoder
+    if encoder_type in ['GCN', 'HGCN']:
+        encoder_params.update({
+            'enc_layers': model_config.enc_layers,
+            'layer_type': model_config.layer_type,
+            'dropout': model_config.dropout,
+            'edge_dim': model_config.edge_dim,
+            'normalization_factor': model_config.normalization_factor,
+            'aggregation_method': model_config.aggregation_method,
+            'msg_transform': model_config.msg_transform
+        })
+        
+        if encoder_type == 'HGCN':
+            encoder_params.update({
+                'manifold': model_config.manifold,
+                'c': model_config.c,
+                'learnable_c': model_config.learnable_c,
+                'sum_transform': model_config.sum_transform,
+                'use_norm': model_config.use_norm
+            })
+    
+    return encoder_params
+
+def extract_decoder_params(config):
+    """Extract decoder parameters from config object."""
+    model_config = config.model
+    
+    # Base decoder parameters
+    decoder_params = {
+        'max_feat_num': model_config.max_feat_num,
+        'hidden_dim': model_config.hidden_dim
+    }
+    
+    # Add specific parameters based on decoder type
+    decoder_type = model_config.decoder
+    if decoder_type in ['GCN', 'HGCN']:
+        decoder_params.update({
+            'dec_layers': model_config.dec_layers,
+            'layer_type': model_config.layer_type,
+            'dropout': model_config.dropout,
+            'edge_dim': model_config.edge_dim,
+            'normalization_factor': model_config.normalization_factor,
+            'aggregation_method': model_config.aggregation_method,
+            'msg_transform': model_config.msg_transform
+        })
+        
+        if decoder_type == 'HGCN':
+            decoder_params.update({
+                'manifold': model_config.manifold,
+                'c': model_config.c,
+                'learnable_c': model_config.learnable_c,
+                'sum_transform': model_config.sum_transform,
+                'use_norm': model_config.use_norm,
+                'use_centroid': getattr(model_config, 'use_centroid', False)
+            })
+    elif decoder_type == 'CentroidDecoder':
+        decoder_params.update({
+            'dim': model_config.dim,
+            'manifold': None,  # Will be set during instantiation
+            'dropout': model_config.dropout
+        })
+    
+    return decoder_params
+
+def extract_hvae_params(config):
+    """Extract HVAE parameters from config object."""
+    model_config = config.model
+    train_config = config.train
+    
+    return {
+        'device': config.device,
+        'encoder_class': getattr(Encoders, model_config.encoder),
+        'encoder_params': extract_encoder_params(config),
+        'decoder_class': getattr(Decoders, model_config.decoder),
+        'decoder_params': extract_decoder_params(config),
+        'manifold_type': model_config.manifold,
+        'train_class_num': train_config.class_num,
+        'dim': model_config.dim,
+        'pred_node_class': getattr(model_config, 'pred_node_class', True),
+        'use_kl_loss': getattr(model_config, 'use_kl_loss', True),
+        'use_base_proto_loss': getattr(model_config, 'use_base_proto_loss', True),
+        'use_sep_proto_loss': getattr(model_config, 'use_sep_proto_loss', True),
+        'pred_edge': getattr(model_config, 'pred_edge', False),
+        'pred_graph_class': getattr(model_config, 'pred_graph_class', False),
+        'classifier_dropout': getattr(model_config, 'classifier_dropout', 0.0),
+        'classifier_bias': getattr(model_config, 'classifier_bias', True)
+    }
+
+def create_encoder_from_config(config):
+    """Create encoder instance from config."""
+    encoder_class = getattr(Encoders, config.model.encoder)
+    encoder_params = extract_encoder_params(config)
+    return encoder_class(**encoder_params)
+
+def create_decoder_from_config(config):
+    """Create decoder instance from config."""
+    decoder_class = getattr(Decoders, config.model.decoder)
+    decoder_params = extract_decoder_params(config)
+    return decoder_class(**decoder_params)
+
+def create_hvae_from_config(config):
+    """Create HVAE instance from config."""
+    from models.HVAE import HVAE
+    hvae_params = extract_hvae_params(config)
+    return HVAE(**hvae_params)

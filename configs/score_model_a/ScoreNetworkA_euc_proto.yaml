@@ -1,0 +1,15 @@
+model_class: "ScoreNetworkA_euc_proto"
+max_feat_num: 10
+max_node_num: ${data.max_node_num}
+nhid: 32
+num_layers: 5
+num_linears: 3
+c_init: 2
+c_hid: 8
+c_final: 4
+adim: 32
+num_heads: 4
+conv: "GCN"
+manifold: null
+proto_weight: 0.3
+

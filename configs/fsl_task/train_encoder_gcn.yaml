@@ -1,0 +1,34 @@
+# @package _global_
+# configs/experiments/train_encoder.yaml
+
+defaults: # 默认配置，会被后续的配置覆盖
+  - base_config  # 引用 configs/common/config.yaml
+  - /data/Letter_high  # 默认数据集配置
+  - /fsl_task/10shot  # 默认少样本学习任务配置
+  - encoder: GCN  # 默认编码器配置
+  - _self_
+
+# 实验配置
+exp_name: "${data.name}_${encoder.layer_type}_encoder_train" # 实验名称
+timestamp: ${now:%Y%m%d_%H%M%S} # 当前时间戳
+run_name: ${exp_name}/${timestamp}  # 运行名称，自动组合实验名称和时间戳
+debug: false # 是否开启调试模式
+
+
+
+# 数据相关配置 (覆盖默认配置)
+data:
+  batch_size: 256 # 批处理大小
+
+# 训练配置覆盖
+train:
+  num_epochs: 300  # 编码器训练轮数
+  lr: 0.0005  # 学习率
+  eval_interval: 50  # 每20个epoch评估一次
+  weight_decay: 0.0001  # 权重衰减
+  num_eval_tasks: 10 # 训练集上评估任务数量 (增加到50个)
+
+seed: 4 # 随机种子
+device: auto # 运行设备 (例如 "cuda", "cpu", "auto" 表示自动选择)
+device_count: 1 # 使用的设备数量
+

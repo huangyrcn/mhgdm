@@ -1,0 +1,8 @@
+model_class: "ScoreNetworkX_poincare"
+max_feat_num: 10
+depth: 5
+nhid: 32
+manifold: "PoincareBall"
+c: 1.0
+edge_dim: 1
+GCN_type: "HGCN"

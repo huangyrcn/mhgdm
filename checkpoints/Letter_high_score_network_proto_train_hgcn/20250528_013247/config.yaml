@@ -1,0 +1,79 @@
+data:
+  batch_size: 512
+  dir: datasets/
+  graph_num: 2250
+  init: degrees
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  test_class_num: 4
+  test_split: 0.2
+  train_class_num: 11
+debug: false
+device: cuda:1
+device_count: 1
+encoder_path: checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth
+exp_name: Letter_high_score_network_proto_train_hgcn
+fsl_task:
+  K_shot: 5
+  N_way: 4
+  P_num_task: 10
+  R_query: 10
+run_name: Letter_high_score_network_proto_train_hgcn/20250528_013247
+score_model_a:
+  adim: 32
+  c: 1.0
+  c_final: 4
+  c_hid: 8
+  c_init: 2
+  conv: GCN
+  manifold: PoincareBall
+  max_feat_num: 64
+  max_node_num: 9
+  model_class: ScoreNetworkA_poincare
+  nhid: 32
+  num_heads: 4
+  num_layers: 7
+  num_linears: 2
+score_model_x:
+  GCN_type: HGCN
+  c: 1.0
+  depth: 5
+  edge_dim: 1
+  manifold: PoincareBall
+  max_feat_num: 64
+  max_node_num: 9
+  model_class: ScoreNetworkX_poincare
+  nhid: 32
+sde:
+  adj:
+    beta_max: 0.3
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+  x:
+    beta_max: 0.3
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+seed: 1
+timestamp: '20250528_013247'
+train:
+  ema: 0.999
+  eps: 1.0e-05
+  grad_norm: 1.0
+  kl_regularization: 1.0e-05
+  lr: 0.01
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 5000
+  print_interval: 100
+  reduce_mean: true
+  save_interval: 500
+  weight_decay: 0.0001
+wandb:
+  entity: huangyr_team
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr

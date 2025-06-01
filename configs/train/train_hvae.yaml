@@ -1,0 +1,21 @@
+# @package train
+# configs/train/train_hvae.yaml - HVAE Training Parameters
+
+lr: 0.001
+weight_decay: 0.0001
+num_epochs: 500
+eval_interval: 50  # 每50个epoch评估一次
+num_eval_tasks: 100  # 训练集评估任务数
+
+# HVAE Loss weights configuration
+loss_weights:
+  node_classification: 1.0     # 节点分类/重构损失权重
+  kl: 0.1                     # KL散度损失权重
+  edge: 1.0                   # 边预测损失权重
+  base_proto: 1.0             # 基础原型损失权重
+  sep_proto: 0.1              # 原型分离损失权重
+  graph_classification: 1.0    # 图分类损失权重
+
+# Optimizer settings
+optimizer: "Adam"
+lr_scheduler: null

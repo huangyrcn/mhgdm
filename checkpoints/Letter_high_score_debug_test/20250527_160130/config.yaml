@@ -1,0 +1,110 @@
+data:
+  batch_size: 8
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  num_workers: 1
+debug: false
+device: cuda
+exp_name: Letter_high_score_debug_test
+fsl_task:
+  k_shot: 5
+  n_way: 5
+  query_num: 15
+model:
+  activation: elu
+  adim: 64
+  adj:
+    activation: elu
+    adim: 64
+    c: 1.0
+    conv: GCN
+    dropout: 0.0
+    manifold: PoincareBall
+    max_feat_num: 64
+    max_node_num: 9
+    model_class: ScoreNetworkA_poincare_proto
+    nhid: 64
+    normalization_factor: 1
+    num_heads: 4
+    proto_weight: 0.1
+    time_embedding_dim: 64
+    time_scale_layers: 2
+    use_batch_norm: false
+    use_centroid: false
+    use_time_conditioning: true
+  c: 1.0
+  conv: GCN
+  dim: 64
+  dropout: 0.0
+  encoder_path: checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth
+  hidden_dim: 64
+  manifold: PoincareBall
+  max_feat_num: 64
+  max_node_num: 9
+  model_type: score
+  nhid: 64
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.1
+  time_scale_layers: 2
+  use_batch_norm: false
+  use_centroid: false
+  use_time_conditioning: true
+  x:
+    activation: elu
+    c: 1.0
+    conv: GCN
+    dropout: 0.0
+    manifold: PoincareBall
+    max_feat_num: 64
+    model_class: ScoreNetworkX_poincare_proto
+    nhid: 64
+    normalization_factor: 1
+    num_heads: 4
+    proto_weight: 0.1
+    time_embedding_dim: 64
+    time_scale_layers: 2
+    use_batch_norm: false
+    use_centroid: false
+    use_time_conditioning: true
+run_name: Letter_high_score_debug_test/20250527_160130
+sde:
+  adj:
+    beta_max: 0.1
+    beta_min: 0.001
+    num_scales: 100
+    type: VE
+  x:
+    beta_max: 0.05
+    beta_min: 0.001
+    num_scales: 100
+    type: VP
+seed: 42
+timestamp: '20250527_160130'
+train:
+  beta1: 0.9
+  beta2: 0.999
+  ema: 0.999
+  eps: 0.001
+  eval_interval: 5
+  grad_norm: 0.1
+  lr: 1.0e-05
+  lr_decay: 0.98
+  lr_schedule: false
+  min_lr: 1.0e-08
+  num_epochs: 10
+  optimizer: Adam
+  proto_loss_weight: 0.01
+  proto_update_freq: 1
+  reduce_mean: true
+  save_interval: 5
+  use_proto_regularization: true
+  warmup_epochs: 0
+  weight_decay: 1.0e-06
+wandb:
+  entity: null
+  no_wandb: false
+  online: false
+  project: mhgdm_debug
+  wandb_usr: huangyr

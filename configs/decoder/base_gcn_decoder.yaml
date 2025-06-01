@@ -1,0 +1,10 @@
+model_class: GCN
+max_feat_num: 5
+hidden_dim: 64
+dec_layers: 3
+layer_type: GCN
+dropout: 0.1
+edge_dim: 1
+normalization_factor: 1.0
+aggregation_method: sum
+msg_transform: linear

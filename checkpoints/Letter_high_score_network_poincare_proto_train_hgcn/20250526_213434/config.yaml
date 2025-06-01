@@ -1,0 +1,157 @@
+checkpoint:
+  mode: min
+  monitor: val_loss
+  save_best: true
+  save_last: true
+data:
+  batch_size: 64
+  dir: datasets/
+  graph_num: 2250
+  init: degrees
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  num_workers: 4
+  test_class_num: 4
+  test_split: 0.2
+  train_class_num: 11
+debug: false
+device: cuda:0
+device_count: 1
+evaluation:
+  eval_batch_size: 32
+  log_samples: true
+  num_eval_samples: 100
+  save_samples: true
+exp_name: Letter_high_score_network_poincare_proto_train_hgcn
+experiment:
+  notes: Score model training with Poincare ball and prototype learning using HGCN
+    encoder
+  tags:
+  - score_model
+  - poincare
+  - proto
+  - hgcn
+fsl_task:
+  K_shot: 5
+  N_way: 4
+  P_num_task: 10
+  R_query: 10
+logging:
+  log_grad_norm: true
+  log_interval: 10
+  log_proto_stats: true
+  save_proto_checkpoints: true
+loss:
+  num_scales: 1000
+  sigma_max: 1.0
+  sigma_min: 0.01
+model:
+  activation: elu
+  adim: null
+  c: null
+  conv: GCN
+  dim: null
+  dropout: 0.0
+  encoder_path: checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth
+  hidden_dim: null
+  manifold: null
+  max_feat_num: null
+  max_node_num: 9
+  model_type: score
+  nhid: null
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.3
+  use_batch_norm: false
+  use_centroid: false
+optimizer:
+  adj:
+    lr: 0.001
+    weight_decay: 1.0e-05
+  x:
+    lr: 0.001
+    weight_decay: 1.0e-05
+run_name: Letter_high_score_network_poincare_proto_train_hgcn/20250526_213434
+score_modelA:
+  adim: 32
+  c: 0.01
+  c_final: 4
+  c_hid: 8
+  c_init: 2
+  conv: GCN
+  dropout: 0.0
+  manifold: Lorentz
+  max_feat_num: null
+  max_node_num: 9
+  model_class: ScoreNetworkA_poincare_proto
+  msg_transform: true
+  nhid: 32
+  normalization_factor: 1
+  num_heads: 4
+  num_layers: 7
+  num_linears: 2
+  proto_weight: 0.3
+  sum_transform: true
+  use_centroid: false
+  use_norm: ln
+score_modelX:
+  GCN_type: HGCN
+  c: 0.01
+  depth: 5
+  dropout: 0.0
+  edge_dim: 1
+  manifold: Lorentz
+  max_feat_num: null
+  model_class: ScoreNetworkX_poincare_proto
+  msg_transform: true
+  nhid: 32
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.3
+  sum_transform: true
+  use_centroid: false
+  use_norm: ln
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 0.2
+    beta_min: 0.01
+    num_scales: 1000
+    type: VP
+seed: 42
+timestamp: '20250526_213434'
+train:
+  ema: 0.999
+  eps: 1.0e-05
+  grad_norm: 1.0
+  kl_regularization: 1.0e-05
+  lr: 0.01
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 5000
+  print_interval: 5
+  reduce_mean: true
+  save_interval: 1
+  weight_decay: 0.0001
+training:
+  batch_size: 1
+  early_stop_patience: 20
+  epochs: 50
+  eval_interval: 5
+  save_interval: 10
+  scheduler_gamma: 0.5
+  scheduler_step_size: 20
+  scheduler_type: StepLR
+  use_scheduler: true
+wandb:
+  entity: your_entity
+  log_interval: 10
+  no_wandb: false
+  online: false
+  project: mhgdm
+  wandb_usr: huangyr

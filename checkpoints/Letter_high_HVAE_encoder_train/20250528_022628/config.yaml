@@ -1,0 +1,84 @@
+data:
+  batch_size: 512
+  dir: datasets/
+  graph_num: 2250
+  init: degrees
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  test_class_num: 4
+  test_split: 0.2
+  train_class_num: 11
+debug: false
+decoder:
+  aggregation_method: sum
+  c: 1.0
+  dec_layers: 3
+  dropout: 0.1
+  edge_dim: 1
+  hidden_dim: 64
+  input_manifold: null
+  layer_type: HGCN
+  learnable_c: false
+  manifold: PoincareBall
+  max_feat_num: 64
+  model_class: HGCN
+  msg_transform: linear
+  normalization_factor: 1.0
+  sum_transform: linear
+  use_centroid: false
+  use_norm: false
+device: cuda:1
+device_count: 1
+encoder:
+  aggregation_method: sum
+  c: 1.0
+  dim: 64
+  dropout: 0.1
+  edge_dim: 1
+  enc_layers: 3
+  hidden_dim: 64
+  input_feat_dim: 6
+  layer_type: HGCN
+  learnable_c: false
+  manifold: PoincareBall
+  max_feat_num: 6
+  model_class: HGCN
+  msg_transform: linear
+  normalization_factor: 1.0
+  pred_edge: false
+  sum_transform: linear
+  use_centroid: false
+  use_norm: false
+exp_name: Letter_high_HVAE_encoder_train
+fsl_task:
+  K_shot: 5
+  N_way: 4
+  P_num_task: 10
+  R_query: 10
+run_name: Letter_high_HVAE_encoder_train/20250528_022628
+seed: 1
+timestamp: '20250528_022628'
+train:
+  ema: 0.999
+  eps: 1.0e-05
+  eval_interval: 50
+  grad_norm: 1.0
+  loss_weights:
+    edge: 1.0
+    kl: 0.1
+    reconstruction: 1.0
+  lr: 0.001
+  lr_decay: 0.999
+  lr_schedule: true
+  num_epochs: 500
+  num_eval_tasks: 100
+  print_interval: 50
+  weight_decay: 0.0001
+use_decoder: true
+wandb:
+  entity: huangyr_team
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr

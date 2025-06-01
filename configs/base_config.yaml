@@ -1,0 +1,24 @@
+# Hydra配置框架设置
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false
+
+# 实验追踪配置 (W&B - Weights & Biases)
+wandb:
+  no_wandb: true              # 是否禁用wandb
+  online: false               # 在线模式 (false为离线记录)
+  project: MHGDM              # 项目名称
+  wandb_usr: huangyr          # 用户名
+  entity: huangyr_team        # 团队名称
+
+# 调试模式配置
+debug: true                   # 调试模式，也会禁用wandb
+

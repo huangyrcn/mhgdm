@@ -1,7 +1,0 @@
-model_type: ScoreNetworkX_poincare
-max_feat_num: ${model.max_feat_num}  # 引用基础配置中的值
-depth: 5
-nhid: 32
-manifold: Lorentz
-edge_dim: 1
-GCN_type: HGCN 

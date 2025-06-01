@@ -1,0 +1,18 @@
+# HGCN Encoder Configuration
+model_class: HGCN  # 编码器类型
+input_feat_dim: ${data.max_feat_num} # 使用正确的Hydra语法引用数据集的特征维
+hidden_dim: 128
+dim: 64
+enc_layers: 2
+layer_type: 'HGCN'  # or 'HGAT'
+dropout: 0.1
+edge_dim: 1 
+normalization_factor: 1.0 # Example value, adjust as needed
+aggregation_method: 'sum' # Example value, adjust as needed (e.g., 'mean', 'max')
+msg_transform: 'linear' # Example value, adjust as needed (e.g., 'mlp')
+sum_transform: 'linear' # Example value, adjust as needed
+use_norm: 'ln' # 'ln' for LayerNorm, 'none' for no normalization
+manifold: 'PoincareBall' # Example value, adjust as needed (e.g., 'Euclidean', 'Lorentz')
+c: 1.0 # Curvature, adjust as needed
+learnable_c: False # Whether curvature is learnable, adjust as needed
+pred_edge: true # Example value, adjust as needed

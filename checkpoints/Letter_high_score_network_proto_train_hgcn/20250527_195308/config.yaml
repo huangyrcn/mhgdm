@@ -1,0 +1,132 @@
+checkpoint:
+  mode: min
+  monitor: val_loss
+  save_best: true
+  save_last: true
+data:
+  batch_size: 64
+  dir: datasets/
+  graph_num: 2250
+  init: degrees
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  num_workers: 4
+  test_class_num: 4
+  test_split: 0.2
+  train_class_num: 11
+debug: false
+device: cuda:0
+device_count: 1
+evaluation:
+  eval_batch_size: 32
+  log_samples: true
+  num_eval_samples: 100
+  save_samples: true
+exp_name: Letter_high_score_network_proto_train_hgcn
+experiment:
+  notes: Score model training with Poincare ball and prototype learning
+  tags:
+  - score_model
+  - poincare
+  - proto
+  - hgcn
+fsl_task:
+  K_shot: 5
+  N_way: 4
+  P_num_task: 10
+  R_query: 10
+logging:
+  log_grad_norm: true
+  log_interval: 10
+  log_proto_stats: true
+  save_proto_checkpoints: true
+loss:
+  lambda_contrastive: 0.1
+  lambda_train: 1.0
+  proto_loss_type: mse
+  proto_temperature: 0.1
+  sigma_max: 5.0
+  sigma_min: 0.01
+  type: dsm
+model:
+  encoder_path: checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth
+  model_type: score
+run_name: Letter_high_score_network_proto_train_hgcn/20250527_195308
+score_model_a:
+  adim: 64
+  c: 1.0
+  c_final: 4
+  c_hid: 8
+  c_init: 2
+  conv: GCN
+  manifold: PoincareBall
+  max_feat_num: 64
+  max_node_num: 9
+  model_class: ScoreNetworkA_poincare_proto
+  nhid: 64
+  num_heads: 4
+  num_layers: 5
+  num_linears: 3
+  proto_weight: 0.1
+score_model_x:
+  GCN_type: HGCN
+  activation: elu
+  c: 1.0
+  conv: GCN
+  depth: 5
+  dropout: 0.0
+  edge_dim: 1
+  manifold: PoincareBall
+  max_feat_num: 64
+  model_class: ScoreNetworkX_poincare_proto
+  nhid: 64
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.1
+  time_embedding_dim: 64
+  time_scale_layers: 2
+  use_batch_norm: false
+  use_centroid: false
+  use_time_conditioning: true
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 0.2
+    beta_min: 0.01
+    num_scales: 1000
+    type: VP
+seed: 42
+timestamp: '20250527_195308'
+train:
+  beta1: 0.9
+  beta2: 0.999
+  ema: 0.999
+  eps: 0.001
+  eval_interval: 5
+  grad_norm: 0.1
+  kl_regularization: 1.0e-05
+  lr: 1.0e-05
+  lr_decay: 0.98
+  lr_schedule: false
+  min_lr: 1.0e-08
+  num_epochs: 10
+  optimizer: Adam
+  print_interval: 5
+  proto_loss_weight: 0.01
+  proto_update_freq: 1
+  reduce_mean: true
+  save_interval: 5
+  use_proto_regularization: true
+  warmup_epochs: 0
+  weight_decay: 1.0e-06
+wandb:
+  entity: huangyr_team
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr

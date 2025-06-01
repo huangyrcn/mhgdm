@@ -12,31 +12,37 @@ from layers.att_layers import DenseAtt
 from utils.manifolds_utils import proj_tan0, proj_tan, exp_after_transp0, transp0back_after_logmap
 
 
-def get_dim_act_curv(config, num_layers, enc=True):
+def get_dim_act_curv(hidden_dim, dim, manifold_name, c, learnable_c, act_name='ReLU', num_layers=2, enc=True):
     """
     Helper function to get dimension and activation at every layer.
-    :param args:
-    :return:
+    :param hidden_dim: Hidden dimension size
+    :param dim: Output dimension size  
+    :param manifold_name: Name of manifold ('PoincareBall' or 'Lorentz')
+    :param c: Curvature parameter
+    :param learnable_c: Whether curvature is learnable
+    :param act_name: Activation function name (default 'ReLU')
+    :param num_layers: Number of layers
+    :param enc: Whether this is for encoder (True) or decoder (False)
+    :return: dims, acts, manifolds
     """
-    model_config = config.model
-    act = getattr(nn, model_config.act)
+    act = getattr(nn, act_name)
     if isinstance(act(),nn.LeakyReLU):
         acts = [act(0.5)] * (num_layers)
     else:
         acts = [act()] * (num_layers)  # len=args.num_layers
     if enc:
-        dims = [model_config.hidden_dim] * (num_layers+1)  # len=args.num_layers+1
+        dims = [hidden_dim] * (num_layers+1)  # len=args.num_layers+1
     else:
-        dims = [model_config.dim]+[model_config.hidden_dim] * (num_layers)  # len=args.num_layers+1
+        dims = [dim]+[hidden_dim] * (num_layers)  # len=args.num_layers+1
 
     manifold_class = {'PoincareBall': PoincareBall, 'Lorentz': Lorentz}
 
     if enc:
-        manifolds = [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)
-                     for _ in range(num_layers)]+[manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)]
+        manifolds = [manifold_class[manifold_name](c, learnable=learnable_c)
+                     for _ in range(num_layers)]+[manifold_class[manifold_name](c, learnable=learnable_c)]
     else:
-        manifolds = [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)]+\
-                    [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c) for _ in
+        manifolds = [manifold_class[manifold_name](c, learnable=learnable_c)]+\
+                    [manifold_class[manifold_name](c, learnable=learnable_c) for _ in
                     range(num_layers)]
 
     return dims, acts, manifolds

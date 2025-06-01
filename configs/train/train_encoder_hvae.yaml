@@ -1,0 +1,17 @@
+ema: 0.999
+eps: 0.00001
+grad_norm: 1.0
+lr: 0.001
+lr_decay: 0.999
+lr_schedule: true
+num_epochs: 500
+print_interval: 50
+eval_interval: 50
+num_eval_tasks: 100
+weight_decay: 0.0001
+
+# Loss weights for HVAE-style training
+loss_weights:
+  reconstruction: 1.0  # Weight for node reconstruction loss
+  kl: 0.1             # Weight for KL divergence loss
+  edge: 1.0           # Weight for edge prediction loss

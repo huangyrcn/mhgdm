@@ -22,37 +22,42 @@ class OneHot_CrossEntropy(torch.nn.Module):
 
 class HVAE(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, device, encoder_class, encoder_params, decoder_class, decoder_params,
+                 manifold_type, train_class_num, dim, pred_node_class=True, use_kl_loss=True,
+                 use_base_proto_loss=True, use_sep_proto_loss=True, pred_edge=False,
+                 pred_graph_class=False, classifier_dropout=0.0, classifier_bias=True):
         super(HVAE, self).__init__()
-        self.device = config.device
-        self.encoder = getattr(Encoders, config.model.encoder)(config)
+        self.device = device
+        
+        # Create encoder with specific parameters
+        self.encoder = encoder_class(**encoder_params)
 
-        if config.model.manifold != "Euclidean":
-            self.decoder = getattr(Decoders, config.model.decoder)(
-                config, self.encoder.manifolds[-1]
-            )
-        else:
-            self.decoder = getattr(Decoders, config.model.decoder)(config)
-        self.config = config
+        # Create decoder with specific parameters
+        if manifold_type != "Euclidean":
+            # Check if decoder supports input_manifold parameter
+            import inspect
+            decoder_signature = inspect.signature(decoder_class.__init__)
+            if 'input_manifold' in decoder_signature.parameters:
+                decoder_params['input_manifold'] = self.encoder.manifolds[-1] if hasattr(self.encoder, 'manifolds') else None
+        self.decoder = decoder_class(**decoder_params)
 
         self.loss_fn = OneHot_CrossEntropy()
         self.manifold = self.encoder.manifold
 
-        # 读取新的配置项，默认为 True 以保持兼容性
-        self.pred_node_class = getattr(config.model, "pred_node_class", True)
-        self.use_kl_loss = getattr(config.model, "use_kl_loss", True)
-        self.use_base_proto_loss = getattr(config.model, "use_base_proto_loss", True)
-        self.use_sep_proto_loss = getattr(config.model, "use_sep_proto_loss", True)
-
-        self.pred_edge_enabled = getattr(config.model, "pred_edge", False)
-        self.pred_graph_class_enabled = getattr(self.config.model, "pred_graph_class", False)
+        # Store configuration parameters
+        self.pred_node_class = pred_node_class
+        self.use_kl_loss = use_kl_loss
+        self.use_base_proto_loss = use_base_proto_loss
+        self.use_sep_proto_loss = use_sep_proto_loss
+        self.pred_edge_enabled = pred_edge
+        self.pred_graph_class_enabled = pred_graph_class
 
         if self.pred_edge_enabled:
             self.edge_predictor = FermiDiracDecoder(self.encoder.manifold)
             self.edge_loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
-        self.num_graph_classes = config.data.train_class_num
-        self.latent_dim = config.model.dim
+        self.num_graph_classes = train_class_num
+        self.latent_dim = dim
         # Revert prototype dimension to 2*latent_dim
         self.graph_prototypes = nn.Parameter(
             torch.randn(self.num_graph_classes, self.latent_dim * 2)
@@ -66,9 +71,9 @@ class HVAE(nn.Module):
         if self.pred_graph_class_enabled:
             # Use the Classifier from models.Decoders for graph-level classification
             self.graph_classifier = Decoders.Classifier(
-                model_dim=self.config.model.dim,
-                classifier_dropout=getattr(self.config.model, "classifier_dropout", 0.0),
-                classifier_bias=getattr(self.config.model, "classifier_bias", True),
+                model_dim=dim,
+                classifier_dropout=classifier_dropout,
+                classifier_bias=classifier_bias,
                 manifold=None,  # mean_graph is Euclidean
                 n_classes=self.num_graph_classes,  # Graph-level classes
             )

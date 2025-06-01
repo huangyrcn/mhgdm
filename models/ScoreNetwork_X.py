@@ -15,6 +15,19 @@ from utils.model_utils import get_timestep_embedding
 from layers.attention import AttentionLayer
 
 
+def get_manifold(manifold_name, c):
+    """内部流形实例化函数"""
+    import geoopt
+    if manifold_name == "Euclidean":
+        return None
+    elif manifold_name == "PoincareBall":
+        return geoopt.PoincareBall(c=c)
+    elif manifold_name == "Lorentz":
+        return geoopt.Lorentz(k=c)
+    else:
+        raise ValueError(f"Unsupported manifold: {manifold_name}")
+
+
 # 欧式空间下的分数网络，基于多层GCN实现
 class ScoreNetworkX(torch.nn.Module):
     def __init__(self, max_feat_num, depth, nhid):
@@ -41,8 +54,9 @@ class ScoreNetworkX(torch.nn.Module):
         )
         self.activation = torch.tanh
 
-    def forward(self, x, adj, flags, t):
+    def forward(self, x, adj, flags, t, labels=None, protos=None):
         # 前向传播：多层GCN+激活，拼接特征，MLP输出分数
+        # labels 和 protos 参数为了兼容性而添加，在基础版本中不使用
         x_list = [x]
         for _ in range(self.depth):
             x = self.layers[_](x, adj)
@@ -79,7 +93,7 @@ class ScoreNetworkX_GMH(torch.nn.Module):
             if _ == 0:
                 self.layers.append(
                     AttentionLayer(
-                        num_linears, max_feat_num, nhid, nhid, c_init, c_hid, num_heads, conv
+                        num_linears, max_feat_num, nhid, nhid, self.c_init, c_hid, num_heads, conv
                     )
                 )
             elif _ == self.depth - 1:
@@ -90,7 +104,7 @@ class ScoreNetworkX_GMH(torch.nn.Module):
                 self.layers.append(
                     AttentionLayer(num_linears, nhid, adim, nhid, c_hid, c_hid, num_heads, conv)
                 )
-        fdim = max_feat_num + depth * nhid
+        fdim = max_feat_num + self.depth * nhid
         self.final = MLP(
             num_layers=3,
             input_dim=fdim,
@@ -120,9 +134,10 @@ class ScoreNetworkX_GMH(torch.nn.Module):
 
 
 class ScoreNetworkX_poincare(torch.nn.Module):
-    def __init__(self, max_feat_num, depth, nhid, manifold, edge_dim, GCN_type, **kwargs):
+    def __init__(self, max_feat_num, depth, nhid, manifold, c, edge_dim, GCN_type, **kwargs):
         super(ScoreNetworkX_poincare, self).__init__()
-        self.manifold = manifold
+        self.manifold = get_manifold(manifold, c)
+        self.c = c
         self.nfeat = max_feat_num
         self.depth = depth
         self.nhid = nhid
@@ -140,7 +155,7 @@ class ScoreNetworkX_poincare(torch.nn.Module):
         self.layers = torch.nn.ModuleList()
         if self.manifold is not None:
             # manifold列表，支持多层双曲空间特征传递
-            self.manifolds = [self.manifold] * (depth + 1)
+            self.manifolds = [self.manifold] * (self.depth + 1)
             for i in range(self.depth):
                 if i == 0:
                     self.layers.append(
@@ -240,9 +255,10 @@ class ScoreNetworkX_poincare(torch.nn.Module):
 
 
 class ScoreNetworkX_poincare_proto(torch.nn.Module):
-    def __init__(self, max_feat_num, depth, nhid, manifold, edge_dim, GCN_type, **kwargs):
+    def __init__(self, max_feat_num, depth, nhid, manifold, c, edge_dim, GCN_type, **kwargs):
         super(ScoreNetworkX_poincare_proto, self).__init__()
-        self.manifold = manifold
+        self.manifold = get_manifold(manifold, c)
+        self.c = c
         self.nfeat = max_feat_num
         self.depth = depth
         self.nhid = nhid
@@ -261,7 +277,7 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
 
         # 构建图卷积层
         if self.manifold is not None:
-            self.manifolds = [self.manifold] * (depth + 1)
+            self.manifolds = [self.manifold] * (self.depth + 1)
             for i in range(self.depth):
                 if i == 0:
                     self.layers.append(
@@ -380,4 +396,53 @@ class ScoreNetworkX_poincare_proto(torch.nn.Module):
         # 掩码应用，忽略不需要的节点
         x = mask_x(x, flags)
 
+        return x
+
+
+class ScoreNetworkX_euc_proto(ScoreNetworkX):
+    def __init__(self, max_feat_num, depth, nhid, **kwargs):
+        super(ScoreNetworkX_euc_proto, self).__init__(max_feat_num, depth, nhid)
+        self.proto_weight = kwargs.get('proto_weight', 0.3)  # Default weight for proto guidance
+        
+        # 原型投影网络 - 将原型从输入维度映射到隐藏维度
+        self.proto_proj = MLP(
+            num_layers=3,
+            input_dim=max_feat_num,     # 原型的原始维度
+            hidden_dim=2*max_feat_num,  
+            output_dim=nhid,            # 映射到隐藏维度
+            use_bn=False,
+            activate_func=F.elu
+        )
+
+    def forward(self, x, adj, flags, t, labels=None, protos=None):
+        # 前向传播：多层GCN+激活，拼接特征，MLP输出分数
+        x_list = [x]
+        
+        # 原型引导 - 在特征传播之前应用原型指导
+        if protos is not None and labels is not None:
+            proto = protos[labels]                   # (B, N, 10) - 获取对应的原型
+            proto_proj = self.proto_proj(proto)     # (B, N, nhid) - 投影到隐藏维度
+            
+            # 在第一层之前将原型信息融入节点特征
+            # 计算节点特征与原型的相似性，用于引导特征学习
+            x_proto_sim = torch.cosine_similarity(x, proto, dim=-1).unsqueeze(-1)  # (B, N, 1)
+            x = x + self.proto_weight * x_proto_sim * proto  # 原型引导的特征增强
+        
+        for _ in range(self.depth):
+            x = self.layers[_](x, adj)
+            x = self.activation(x)
+            x_list.append(x)
+            
+            # 在每一层都应用原型指导
+            if protos is not None and labels is not None and _ < self.depth - 1:
+                # 在中间层继续应用原型指导
+                proto_proj_layer = self.proto_proj(proto)  # 重用投影的原型
+                if x.size(-1) == proto_proj_layer.size(-1):  # 确保维度匹配
+                    x_proto_sim = torch.cosine_similarity(x, proto_proj_layer, dim=-1).unsqueeze(-1)
+                    x = x + self.proto_weight * x_proto_sim * proto_proj_layer
+        
+        xs = torch.cat(x_list, dim=-1)  # B x N x (F + num_layers x H)
+        out_shape = (adj.shape[0], adj.shape[1], -1)
+        x = self.final(xs).view(*out_shape)
+        x = mask_x(x, flags)
         return x

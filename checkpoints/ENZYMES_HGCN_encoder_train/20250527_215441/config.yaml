@@ -1,0 +1,60 @@
+data:
+  batch_size: 256
+  dir: datasets/
+  graph_num: 600
+  init: degrees
+  max_feat_num: 10
+  max_node_num: 125
+  name: ENZYMES
+  test_class_num: 2
+  test_split: 0.2
+  train_class_num: 4
+debug: false
+device: cuda:1
+device_count: 1
+encoder:
+  aggregation_method: sum
+  c: 1.0
+  dim: 64
+  dropout: 0.1
+  edge_dim: 1
+  enc_layers: 2
+  hidden_dim: 128
+  input_feat_dim: 10
+  layer_type: HGCN
+  learnable_c: false
+  manifold: PoincareBall
+  model_class: HGCN
+  msg_transform: linear
+  normalization_factor: 1.0
+  pred_edge: true
+  sum_transform: linear
+  use_norm: ln
+exp_name: ENZYMES_HGCN_encoder_train
+fsl_task:
+  K_shot: 10
+  N_way: 2
+  P_num_task: 10
+  R_query: 10
+  classifier_bias: true
+  classifier_dropout: 0.0
+  epochs_head: 2000
+  head_train_patience: 10
+  lr_head: 0.01
+  num_epochs: 1000
+  use_sampler_augmentation: false
+run_name: ENZYMES_HGCN_encoder_train/20250527_215441
+seed: 4
+timestamp: '20250527_215441'
+train:
+  eval_interval: 50
+  lr: 0.0005
+  num_epochs: 300
+  num_eval_tasks: 10
+  weight_decay: 0.0001
+wandb:
+  entity: huangyr_team
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr

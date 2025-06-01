@@ -8,20 +8,23 @@ from torch.nn.modules.module import Module
 from layers.att_layers import DenseAtt
 
 
-def get_dim_act(config, num_layers, enc=True):
+def get_dim_act(hidden_dim, act_name, num_layers, enc=True, dim=None):
     """
     Helper function to get dimension and activation at every layer.
-    :param args:
-    :return:
+    :param hidden_dim: hidden dimension size
+    :param act_name: activation function name (e.g., 'ReLU')
+    :param num_layers: number of layers
+    :param enc: whether this is for encoder (True) or decoder (False)
+    :param dim: dimension for decoder (only used when enc=False)
+    :return: dims, acts
     """
-    model_config = config.model
-    act = getattr(nn, model_config.act)
+    act = getattr(nn, act_name)
     acts = [act()] * (num_layers)
 
     if enc:
-        dims = [model_config.hidden_dim] * (num_layers+1) # len=args.num_layers+1
+        dims = [hidden_dim] * (num_layers+1) # len=args.num_layers+1
     else:
-        dims = [model_config.dim]+[model_config.hidden_dim] * (num_layers)   # len=args.num_layers+1
+        dims = [dim]+[hidden_dim] * (num_layers)   # len=args.num_layers+1
 
     return dims, acts
 

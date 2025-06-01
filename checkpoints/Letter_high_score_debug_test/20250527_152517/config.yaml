@@ -1,0 +1,155 @@
+checkpoint:
+  mode: min
+  monitor: val_loss
+  save_best: true
+  save_last: true
+data:
+  batch_size: 8
+  dir: datasets/
+  graph_num: 2250
+  init: degrees
+  max_feat_num: 6
+  max_node_num: 9
+  name: Letter_high
+  num_workers: 1
+  test_class_num: 4
+  test_split: 0.2
+  train_class_num: 11
+debug: false
+device: cuda:0
+device_count: 1
+evaluation:
+  eval_batch_size: 8
+  log_samples: true
+  num_eval_samples: 10
+  save_samples: false
+exp_name: Letter_high_score_debug_test
+experiment:
+  notes: Debug configuration with reduced SDE parameters to fix large loss issue
+  tags:
+  - debug
+  - score_model
+  - poincare
+  - proto
+fsl_task:
+  K_shot: 5
+  N_way: 4
+  P_num_task: 10
+  R_query: 10
+logging:
+  log_grad_norm: true
+  log_interval: 1
+  log_proto_stats: true
+  save_proto_checkpoints: false
+loss:
+  lambda_contrastive: 0.01
+  lambda_train: 1.0
+  proto_loss_type: mse
+  proto_temperature: 0.1
+  sigma_max: 1.0
+  sigma_min: 0.001
+  type: dsm
+model:
+  activation: elu
+  adim: null
+  c: null
+  conv: GCN
+  dim: null
+  dropout: 0.0
+  encoder_path: checkpoints/Letter_high_HGCN_encoder_train/20250526_212414/best.pth
+  hidden_dim: null
+  manifold: null
+  max_feat_num: null
+  max_node_num: 9
+  model_type: score
+  nhid: null
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.1
+  time_scale_layers: 2
+  use_batch_norm: false
+  use_centroid: false
+  use_time_conditioning: true
+run_name: Letter_high_score_debug_test/20250527_152517
+score_modelA:
+  adim: 32
+  c: 0.01
+  c_final: 4
+  c_hid: 8
+  c_init: 2
+  conv: GCN
+  dropout: 0.0
+  manifold: Lorentz
+  max_feat_num: null
+  max_node_num: 9
+  model_class: ScoreNetworkA_poincare_proto
+  msg_transform: true
+  nhid: 32
+  normalization_factor: 1
+  num_heads: 4
+  num_layers: 7
+  num_linears: 2
+  proto_weight: 0.3
+  sum_transform: true
+  use_centroid: false
+  use_norm: ln
+score_modelX:
+  GCN_type: HGCN
+  c: 0.01
+  depth: 5
+  dropout: 0.0
+  edge_dim: 1
+  manifold: Lorentz
+  max_feat_num: null
+  model_class: ScoreNetworkX_poincare_proto
+  msg_transform: true
+  nhid: 32
+  normalization_factor: 1
+  num_heads: 4
+  proto_weight: 0.3
+  sum_transform: true
+  use_centroid: false
+  use_norm: ln
+sde:
+  adj:
+    beta_max: 0.1
+    beta_min: 0.001
+    num_scales: 100
+    type: VE
+  x:
+    beta_max: 0.05
+    beta_min: 0.001
+    num_scales: 100
+    type: VP
+seed: 42
+timestamp: '20250527_152517'
+train:
+  beta1: 0.9
+  beta2: 0.999
+  ema: 0.999
+  eps: 0.001
+  eval_interval: 5
+  grad_clip_norm: 0.1
+  grad_norm: 1.0
+  hyperbolic_lr_factor: 0.1
+  kl_regularization: 1.0e-05
+  lr: 1.0e-05
+  lr_decay: 0.98
+  lr_schedule: false
+  min_lr: 1.0e-08
+  num_epochs: 10
+  optimizer: Adam
+  print_interval: 5
+  proto_loss_weight: 0.01
+  proto_update_freq: 1
+  reduce_mean: true
+  save_interval: 5
+  use_proto_regularization: true
+  warmup_epochs: 0
+  weight_decay: 1.0e-06
+wandb:
+  entity: null
+  no_wandb: false
+  online: false
+  project: mhgdm_debug
+  wandb_usr: huangyr

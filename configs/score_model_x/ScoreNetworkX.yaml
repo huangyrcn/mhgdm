@@ -1,0 +1,4 @@
+model_class: "ScoreNetworkX"
+max_feat_num: 10
+depth: 5
+nhid: 32

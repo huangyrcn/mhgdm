@@ -14,12 +14,12 @@ from collections import defaultdict
 from numpy.random import RandomState
 
 # --- 数据文件读取与预处理 ---
-def load_from_file(config, use_degree_as_tag):
-    dataset_name = config.data.name
+def load_from_file(data_config, use_degree_as_tag):
+    dataset_name = data_config.name
     base_dir = pathlib.Path("./datasets") / dataset_name
     file_path = base_dir / f"{dataset_name}.txt"
     save_file_path = base_dir / f"{dataset_name}_processed.pkl"
-    force_reload = getattr(config.data, 'force_reload_data', False)
+    force_reload = getattr(data_config, 'force_reload_data', False)
 
     if not force_reload and save_file_path.exists():
         print(f"Loading processed data from: {save_file_path}")
@@ -100,20 +100,21 @@ def load_from_file(config, use_degree_as_tag):
 
 # --- 主数据集类 ---
 class MyDataset:
-    def __init__(self, config):
-        self.config = config
-        use_degree_as_tag = getattr(config.data, 'degree_as_tag', True)
+    def __init__(self, data_config, fsl_task_config=None):
+        self.data_config = data_config
+        self.fsl_task_config = fsl_task_config
+        use_degree_as_tag = getattr(data_config, 'degree_as_tag', True)
         all_nx_graphs, self.tagset, max_nodes_data, feat_dim_data = \
-            load_from_file(config, use_degree_as_tag)
-        self.max_node_num = getattr(config.data, 'max_node_num', max_nodes_data)
+            load_from_file(data_config, use_degree_as_tag)
+        self.max_node_num = getattr(data_config, 'max_node_num', max_nodes_data)
         # 兼容 max_feat_dim 和 max_feat_num 两种字段
-        if hasattr(config.data, 'max_feat_dim'):
-            self.max_feat_num = getattr(config.data, 'max_feat_dim')
-        elif hasattr(config.data, 'max_feat_num'):
-            self.max_feat_num = getattr(config.data, 'max_feat_num')
+        if hasattr(data_config, 'max_feat_dim'):
+            self.max_feat_num = getattr(data_config, 'max_feat_dim')
+        elif hasattr(data_config, 'max_feat_num'):
+            self.max_feat_num = getattr(data_config, 'max_feat_num')
         else:
             self.max_feat_num = len(self.tagset) if len(self.tagset) > 0 else feat_dim_data
-        split_file = pathlib.Path(f"./datasets/{config.data.name}/train_test_classes.json")
+        split_file = pathlib.Path(f"./datasets/{data_config.name}/train_test_classes.json")
         with open(split_file, "r") as f:
             class_splits = json.load(f)
             self.train_original_classes_set = set(map(int, class_splits["train"]))
@@ -146,7 +147,7 @@ class MyDataset:
         self.test_adjs, self.test_x = graphs_to_tensor(self.test_nx_graphs_internal, self.max_node_num, self.max_feat_num)
         self.train_indices_by_class = None
         self.test_indices_by_class = None
-        if hasattr(self.config, "fsl_task"):
+        if self.fsl_task_config is not None:
             # 构建类别到样本索引的映射
             self.train_indices_by_class = defaultdict(list)
             for i, remapped_label in enumerate(self.train_labels_remapped.tolist()):
@@ -157,7 +158,7 @@ class MyDataset:
             # ----------- 确定性测试采样支持集与查询池 -----------
             # 固定种子，保证每次实验可复现
             rng = np.random.RandomState(42)
-            K_shot = getattr(self.config.fsl_task, 'K_shot', 1)
+            K_shot = getattr(self.fsl_task_config, 'K_shot', 1)
             self.deterministic_test_support_indices_by_class = {}
             query_pool = []
             for cls, indices in self.test_indices_by_class.items():
@@ -168,79 +169,11 @@ class MyDataset:
             rng.shuffle(query_pool)
             self.deterministic_test_query_pool_indices = query_pool
         else:
-            print("No 'fsl_task' in config. Skipping FSL index preparation.")
-    def __init__(self, config):
-        self.config = config
-        use_degree_as_tag = getattr(config.data, 'degree_as_tag', True)
-        all_nx_graphs, self.tagset, max_nodes_data, feat_dim_data = \
-            load_from_file(config, use_degree_as_tag)
-        self.max_node_num = getattr(config.data, 'max_node_num', max_nodes_data)
-        # 兼容 max_feat_dim 和 max_feat_num 两种字段
-        if hasattr(config.data, 'max_feat_dim'):
-            self.max_feat_num = getattr(config.data, 'max_feat_dim')
-        elif hasattr(config.data, 'max_feat_num'):
-            self.max_feat_num = getattr(config.data, 'max_feat_num')
-        else:
-            self.max_feat_num = len(self.tagset) if len(self.tagset) > 0 else feat_dim_data
-        split_file = pathlib.Path(f"./datasets/{config.data.name}/train_test_classes.json")
-        with open(split_file, "r") as f:
-            class_splits = json.load(f)
-            self.train_original_classes_set = set(map(int, class_splits["train"]))
-            self.test_original_classes_set = set(map(int, class_splits["test"]))
-        self.train_nx_graphs_internal = []
-        train_orig_labels_list = []
-        self.test_nx_graphs_internal = []
-        test_orig_labels_list = []
-        for nx_g in all_nx_graphs:
-            original_label = nx_g.graph['label']
-            if original_label in self.train_original_classes_set:
-                self.train_nx_graphs_internal.append(nx_g)
-                train_orig_labels_list.append(original_label)
-            elif original_label in self.test_original_classes_set:
-                self.test_nx_graphs_internal.append(nx_g)
-                test_orig_labels_list.append(original_label)
-        self.train_graphs = self.train_nx_graphs_internal
-        self.test_graphs = self.test_nx_graphs_internal
-        unique_train_sorted = sorted(list(self.train_original_classes_set))
-        train_remapper = {orig_lbl: i for i, orig_lbl in enumerate(unique_train_sorted)}
-        self.train_labels_remapped = torch.LongTensor([train_remapper[l] for l in train_orig_labels_list])
-        self.num_train_classes_remapped = len(unique_train_sorted)
-        unique_test_sorted = sorted(list(self.test_original_classes_set))
-        test_remapper = {orig_lbl: i for i, orig_lbl in enumerate(unique_test_sorted)}
-        self.test_labels_remapped = torch.LongTensor([test_remapper[l] for l in test_orig_labels_list])
-        self.num_test_classes_remapped = len(unique_test_sorted)
-        print(f"Converting training graphs to tensor (max_nodes={self.max_node_num}, target_feat_dim={self.max_feat_num})...")
-        self.train_adjs, self.train_x = graphs_to_tensor(self.train_nx_graphs_internal, self.max_node_num, self.max_feat_num)
-        print(f"Converting testing graphs to tensor (max_nodes={self.max_node_num}, target_feat_dim={self.max_feat_num})...")
-        self.test_adjs, self.test_x = graphs_to_tensor(self.test_nx_graphs_internal, self.max_node_num, self.max_feat_num)
-        self.train_indices_by_class = None
-        self.test_indices_by_class = None
-        if hasattr(self.config, "fsl_task"):
-            self.train_indices_by_class = defaultdict(list)
-            for i, remapped_label in enumerate(self.train_labels_remapped.tolist()):
-                self.train_indices_by_class[remapped_label].append(i)
-            self.test_indices_by_class = defaultdict(list)
-            for i, remapped_label in enumerate(self.test_labels_remapped.tolist()):
-                self.test_indices_by_class[remapped_label].append(i)
-            # ----------- 确定性测试采样支持集与查询池构建 -----------
-            K_shot = getattr(self.config.fsl_task, 'K_shot', 1)
-            rng = np.random.RandomState(42)
-            self.deterministic_test_support_indices_by_class = {}
-            self.deterministic_test_query_pool_indices = []
-            for cls in range(self.num_test_classes_remapped):
-                indices = list(self.test_indices_by_class[cls])
-                rng.shuffle(indices)
-                support = indices[:K_shot]
-                query = indices[K_shot:]
-                self.deterministic_test_support_indices_by_class[cls] = support
-                self.deterministic_test_query_pool_indices.extend(query)
-            rng.shuffle(self.deterministic_test_query_pool_indices)
-        else:
-            print("No 'fsl_task' in config. Skipping FSL index preparation.")
+            print("No fsl_task_config provided. Skipping FSL index preparation.")
 
     def get_loaders(self):
-        batch_size = getattr(self.config.data, 'batch_size', 32)
-        num_workers = getattr(self.config.data, 'num_workers', 0)
+        batch_size = getattr(self.data_config, 'batch_size', 32)
+        num_workers = getattr(self.data_config, 'num_workers', 0)
         train_dataset = TensorDataset(self.train_x, self.train_adjs, self.train_labels_remapped)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
         test_dataset = TensorDataset(self.test_x, self.test_adjs, self.test_labels_remapped)
@@ -341,7 +274,12 @@ class MyDataset:
 
 # --- 主数据加载入口 ---
 def load_data(config, get_graph_list=False):
-    dataset = MyDataset(config)
+    # 明确检查是否需要FSL功能
+    fsl_task_config = getattr(config, 'fsl_task', None)
+    if fsl_task_config is None:
+        print("Warning: No fsl_task config found. FSL functionality will be disabled.")
+    
+    dataset = MyDataset(config.data, fsl_task_config)
     if get_graph_list:
         return dataset.train_graphs, dataset.test_graphs
     else:
