@@ -1,0 +1,110 @@
+# Letter_high 完整训练曲线配置 - 禁用早停机制
+# 用于观察训练的收敛和发散程度
+
+# 实验基本信息
+exp_name: "letter_high_no_early_stop"
+timestamp: "${now}"
+run_name: "${exp_name}_${timestamp}"
+debug: false
+seed: 42
+device: "auto"
+
+# 数据集配置
+data:
+  name: "Letter_high"
+  batch_size: 128
+  max_feat_num: 5
+  max_node_num: 9
+  test_class_num: 4  # 测试类别：[4,6,11,8]
+  train_class_num: 11  # 训练类别：[1,9,10,2,0,3,14,5,12,13,7]
+  test_split: 0.2
+
+# FSL任务配置
+fsl_task:
+  N_way: 4  # 4个测试类别
+  K_shot: 5
+  R_query: 10
+
+# Wandb配置
+wandb:
+  project: "MHGDM_LetterHigh_Full_Curve"
+  entity: "huangyr_team"
+  online: true
+  no_wandb: false
+
+# ==================== VAE配置 - 完整训练版 ====================
+vae:
+  # 编码器配置 - 增强正则化
+  encoder:
+    type: "HyperbolicGraphEncoder"
+    manifold_type: "PoincareBall"
+    layer_type: "HGAT"
+    curvature: 1.0
+    learnable_curvature: false
+    num_layers: 3
+    hidden_feature_dim: 32
+    latent_feature_dim: 16
+    input_feature_dim: 5
+    dropout: 0.2  # 增加dropout防止过拟合
+    aggregation_method: "sum"
+    use_normalization: "ln"
+  
+  # 解码器配置 - 增强正则化
+  decoder:
+    type: "HyperbolicGraphDecoder"
+    manifold_type: "PoincareBall"
+    layer_type: "HGAT"
+    curvature: 1.0
+    learnable_curvature: false
+    num_layers: 3
+    hidden_feature_dim: 32
+    latent_feature_dim: 16
+    output_feature_dim: 5
+    dropout: 0.2  # 增加dropout防止过拟合
+    aggregation_method: "sum"
+    use_normalization: "ln"
+    use_centroid: false
+  
+  # 损失配置
+  loss:
+    pred_node_class: true
+    pred_edge: false
+    pred_graph_class: false
+    use_kl_loss: true
+    use_base_proto_loss: false
+    use_sep_proto_loss: false
+  
+  # 训练配置 - 完整训练版
+  train:
+    num_epochs: 200  # 减少epoch数，观察完整曲线
+    
+    # 学习率优化
+    lr: 0.0005  # 降低学习率
+    lr_decay: 0.95  # 更快衰减
+    lr_schedule: true
+    scheduler_type: "cosine"  # 使用Cosine Annealing
+    warmup_epochs: 10  # 前10个epoch进行warm-up
+    
+    # 正则化强化
+    weight_decay: 0.001  # 增加权重衰减
+    grad_norm: 0.5  # 更严格的梯度裁剪
+    
+    # 早停配置 - 关键：禁用早停
+    enable_early_stopping: false  # 🔥 禁用早停机制，观察完整训练曲线
+    early_stop_patience: 5  # 备用参数
+    early_stop_min_delta: 0.01  # 备用参数
+    
+    # 损失权重 - 增强KL正则化
+    rec_weight: 1.0
+    kl_regularization: 0.001  # 增加KL正则化
+    edge_weight: 0.01
+    graph_classification_weight: 0.0
+    base_proto_weight: 0.0
+    sep_proto_weight: 0.0
+    
+    # 测试间隔 - 更频繁记录
+    test_interval: 1  # 每个epoch都测试，获得详细曲线
+
+# ==================== 路径配置 ====================
+paths:
+  save_dir: "./checkpoints/Letter_high_no_early_stop" 
