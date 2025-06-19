@@ -1,0 +1,82 @@
+# Score Networks Training Configuration
+# 用于训练Score Networks的配置文件，与预训练自编码器完全对齐
+
+defaults:
+  - data: Letter_high               # 使用与检查点匹配的数据集
+  - model: scorenetwork_poincare    # 默认使用双曲空间配置
+  - _self_                         # Allow reference to other configurations in this document
+
+# Experiment settings
+exp_name: "score_network_experiment"
+timestamp: "${now:%Y%m%d_%H%M%S}"
+run_name: "${exp_name}_${timestamp}"
+device: "cuda:0"
+seed: 42
+debug: false
+
+# Pretrained autoencoder checkpoint path
+autoencoder_checkpoint_path: "checkpoints/Letter_high/vae_experiment/20250604_120619/best.pth"
+
+
+# Training configuration
+train:
+  # Training Process Control
+  num_epochs: 5000                  # Number of training epochs
+  grad_norm: 1.0                    # Gradient clipping norm threshold
+  lr_schedule: true                 # Whether to use learning rate scheduling
+  
+  # Loss Function Weights & Regularization
+  sde_weight: 1.0                   # SDE score matching loss weight
+  proto_weight: 0.1                 # Prototype guidance loss weight
+  noise_schedule: "linear"          # Noise schedule type
+  beta_start: 0.0001               # Starting noise variance
+  beta_end: 0.02                   # Ending noise variance
+  
+  # Optimizer Configuration - 与检查点训练配置对齐
+  lr: 0.01                          # 与检查点保持一致
+  lr_decay: 0.999                   # 与检查点保持一致
+  weight_decay: 0.0001              # 与检查点保持一致
+  eps: 1.0e-5                       # 与检查点保持一致
+  
+  # Training Flow Control
+  reduce_mean: true                 # 与检查点保持一致
+  ema: 0.999                        # 与检查点保持一致
+  
+  # Logging & Saving Intervals
+  eval_interval: 100                # 与检查点保持一致
+  print_interval: 10                # 与检查点保持一致
+  save_interval: 50                 # 与检查点保持一致
+
+# Wandb configuration - 与检查点完全对齐
+wandb:
+  no_wandb: false                   # 与检查点保持一致
+  online: false                     # 与检查点保持一致
+  project: ScoreNetwork             # 项目名称
+  wandb_usr: huangyr                # 与检查点保持一致
+  entity: huangyr_team              # 与检查点保持一致
+
+# SDE Configuration for score matching
+sde:
+  x:
+    type: VP                        # Variance Preserving SDE for node features
+    beta_min: 0.1                   # Minimum noise level
+    beta_max: 1.0                   # Maximum noise level
+    num_scales: 1000                # Number of time steps
+  adj:
+    type: VE                        # Variance Exploding SDE for adjacency
+    beta_min: 0.2                   # Minimum noise level  
+    beta_max: 1.0                   # Maximum noise level
+    num_scales: 1000                # Number of time steps
+
+# Hydra configuration framework settings
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false

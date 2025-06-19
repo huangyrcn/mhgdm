@@ -1,15 +1,18 @@
 import torch
 from utils.graph_utils import node_flags
-from utils.loader import load_batch
+
 
 def compute_protos_from(encoder, loader, device):
     encoder.eval()
     all_embeddings, all_labels = [], []
     with torch.no_grad():
         for batch in loader:
-            x, adj, labels = load_batch(batch, device)
-            flags = node_flags(adj)
-            posterior = encoder(x, adj, flags)
+            # 适配新的数据格式
+            x = batch.x.to(device)
+            edge_index = batch.edge_index.to(device)
+            labels = batch.y.to(device)
+            flags = node_flags(edge_index)
+            posterior = encoder(x, edge_index, flags)
             embeddings = posterior.mode()
             all_embeddings.append(embeddings)
             all_labels.append(labels)
@@ -18,7 +21,7 @@ def compute_protos_from(encoder, loader, device):
     unique_labels = torch.unique(all_labels)
     protos = []
     for label in unique_labels:
-        mask = (all_labels == label)
+        mask = all_labels == label
         if mask.sum() > 0:
             proto = all_embeddings[mask].mean(dim=0, keepdim=True)
             protos.append(proto)

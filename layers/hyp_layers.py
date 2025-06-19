@@ -12,34 +12,66 @@ from layers.att_layers import DenseAtt
 from utils.manifolds_utils import proj_tan0, proj_tan, exp_after_transp0, transp0back_after_logmap
 
 
-def get_dim_act_curv(config, num_layers, enc=True):
+def get_dim_act_curv(hidden_dim, dim, manifold_name='PoincareBall', c=1.0, 
+                     learnable_c=False, act_name='ReLU', num_layers=3, enc=True):
     """
-    Helper function to get dimension and activation at every layer.
-    :param args:
-    :return:
+    Helper function to get dimension, activation, and manifolds at every layer for hyperbolic models.
+    
+    Args:
+        hidden_dim: Hidden layer dimension
+        dim: Latent space dimension (for decoders)
+        manifold_name: Name of the manifold ('PoincareBall' or 'Lorentz')
+        c: Curvature value
+        learnable_c: Whether curvature is learnable
+        act_name: Activation function name (e.g., 'ReLU', 'LeakyReLU')
+        num_layers: Number of layers
+        enc: Whether this is for encoder (True) or decoder (False)
+        
+    Returns:
+        dims: List of layer dimensions
+        acts: List of activation functions
+        manifolds: List of manifold instances
     """
-    model_config = config.model
-    act = getattr(nn, model_config.act)
-    if isinstance(act(),nn.LeakyReLU):
-        acts = [act(0.5)] * (num_layers)
+    act_class = getattr(nn, act_name)
+    if isinstance(act_class(), nn.LeakyReLU):
+        acts = [act_class(0.5)] * num_layers
     else:
-        acts = [act()] * (num_layers)  # len=args.num_layers
+        acts = [act_class()] * num_layers
+
     if enc:
-        dims = [model_config.hidden_dim] * (num_layers+1)  # len=args.num_layers+1
+        dims = [hidden_dim] * (num_layers + 1)  # len=num_layers+1
     else:
-        dims = [model_config.dim]+[model_config.hidden_dim] * (num_layers)  # len=args.num_layers+1
+        dims = [dim] + [hidden_dim] * num_layers  # len=num_layers+1
 
     manifold_class = {'PoincareBall': PoincareBall, 'Lorentz': Lorentz}
 
     if enc:
-        manifolds = [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)
-                     for _ in range(num_layers)]+[manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)]
+        manifolds = [manifold_class[manifold_name](c, learnable=learnable_c)
+                     for _ in range(num_layers)] + [manifold_class[manifold_name](c, learnable=learnable_c)]
     else:
-        manifolds = [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c)]+\
-                    [manifold_class[model_config.manifold](model_config.c, learnable=model_config.learnable_c) for _ in
-                    range(num_layers)]
+        manifolds = [manifold_class[manifold_name](c, learnable=learnable_c)] + \
+                    [manifold_class[manifold_name](c, learnable=learnable_c) for _ in range(num_layers)]
 
     return dims, acts, manifolds
+
+
+# Backward compatibility function
+def get_dim_act_curv_legacy(config, num_layers, enc=True):
+    """
+    Backward compatibility wrapper for get_dim_act_curv.
+    Uses config object to extract parameters.
+    """
+    model_config = config.model
+    return get_dim_act_curv(
+        hidden_dim=model_config.hidden_dim,
+        dim=model_config.dim,
+        manifold_name=model_config.manifold,
+        c=model_config.c,
+        learnable_c=model_config.learnable_c,
+        act_name=model_config.act,
+        num_layers=num_layers,
+        enc=enc
+    )
 
 
 class HNNLayer(nn.Module):
@@ -61,32 +93,61 @@ class HNNLayer(nn.Module):
         return x
 
 
-class HGCLayer(nn.Module):
+class HyperbolicGraphConvolutionLayer(nn.Module):
     """
-    Hyperbolic graph convolution layer.
+    Hyperbolic Graph Convolution Layer.
+    Improved version with clearer parameter naming and documentation.
     """
 
-    def __init__(self, in_dim, out_dim, manifold_in, manifold_out, dropout=0., act=nn.ReLU(), edge_dim=1, normalization_factor=1,
-                 aggregation_method='sum', msg_transform=True, sum_transform=True,use_norm='ln'):
-        super(HGCLayer, self).__init__()
-        self.linear = HypLinear(in_dim, out_dim, manifold_in, dropout)
-        self.agg = HypAgg(
-            out_dim, manifold_in, dropout, edge_dim, normalization_factor, aggregation_method, act, msg_transform,
-            sum_transform
+    def __init__(self, input_feature_dim, output_feature_dim, input_manifold, output_manifold, 
+                 dropout=0.0, activation=nn.ReLU(), edge_feature_dim=1, normalization_factor=1.0,
+                 aggregation_method='sum', use_message_transform=True, 
+                 use_output_transform=True, normalization_type='ln'):
+        super(HyperbolicGraphConvolutionLayer, self).__init__()
+        self.linear = HypLinear(input_feature_dim, output_feature_dim, input_manifold, dropout)
+        self.aggregation = HypAgg(
+            output_feature_dim, input_manifold, dropout, edge_feature_dim, normalization_factor, 
+            aggregation_method, activation, use_message_transform, use_output_transform
         )
-        self.use_norm = use_norm
-        if use_norm != 'none':
-            self.norm = HypNorm(out_dim, manifold_in,use_norm)
-        self.hyp_act = HypAct(manifold_in, manifold_out, act)
+        self.normalization_type = normalization_type
+        if normalization_type != 'none':
+            self.normalization = HypNorm(output_feature_dim, input_manifold, normalization_type)
+        self.hyperbolic_activation = HypAct(input_manifold, output_manifold, activation)
 
-    def forward(self, input):
-        x, adj = input
-        x = self.linear(x)
-        x = self.agg(x, adj)
-        if self.use_norm != 'none':
-            x = self.norm(x)         
-        x = self.hyp_act(x)
-        return x,adj
+    def forward(self, input_data):
+        node_features, adjacency_matrix = input_data
+        node_features = self.linear(node_features)
+        node_features = self.aggregation(node_features, adjacency_matrix)
+        if self.normalization_type != 'none':
+            node_features = self.normalization(node_features)         
+        node_features = self.hyperbolic_activation(node_features)
+        return node_features, adjacency_matrix
+
+
+# Backward compatibility alias
+class HGCLayer(HyperbolicGraphConvolutionLayer):
+    """
+    Backward compatibility alias for HyperbolicGraphConvolutionLayer.
+    Maps old parameter names to new ones.
+    """
+
+    def __init__(self, in_dim, out_dim, manifold_in, manifold_out, dropout=0., act=nn.ReLU(), 
+                 edge_dim=1, normalization_factor=1, aggregation_method='sum', 
+                 msg_transform=True, sum_transform=True, use_norm='ln'):
+        super(HGCLayer, self).__init__(
+            input_feature_dim=in_dim,
+            output_feature_dim=out_dim,
+            input_manifold=manifold_in,
+            output_manifold=manifold_out,
+            dropout=dropout,
+            activation=act,
+            edge_feature_dim=edge_dim,
+            normalization_factor=normalization_factor,
+            aggregation_method=aggregation_method,
+            use_message_transform=msg_transform,
+            use_output_transform=sum_transform,
+            normalization_type=use_norm
+        )
 
 
 class HGATLayer(nn.Module):

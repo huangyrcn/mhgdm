@@ -7,172 +7,375 @@ from layers.euc_layers import GCLayer, get_dim_act, GATLayer
 from layers.CentroidDistance import CentroidDistance
 from utils import manifolds_utils
 
-class Decoder(nn.Module):
+
+class GraphDecoder(nn.Module):
     """ 
-    Decoder abstract class
+    Abstract base class for graph decoders.
+    Decodes latent representations back to node features.
     """
 
-    def __init__(self, config):
-        super(Decoder, self).__init__()
-        self.config = config
-        # self.expand_dim = nn.Linear(config.model.dim, config.model.hidden_dim)
-        self.out = nn.Sequential(
-            nn.Linear(config.model.hidden_dim, config.data.max_feat_num),  # CrossEntropyLoss 内置了Softmax
+    def __init__(self, latent_feature_dim, hidden_feature_dim, output_feature_dim):
+        super(GraphDecoder, self).__init__()
+        self.latent_feature_dim = latent_feature_dim
+        self.hidden_feature_dim = hidden_feature_dim
+        self.output_feature_dim = output_feature_dim
+        
+        # Project decoded features to output node features
+        self.output_projection = nn.Sequential(
+            nn.Linear(self.hidden_feature_dim, self.output_feature_dim),
         )
 
-        # self.reset_parameters()
-    #
-    # def reset_parameters(self):
-    #     init.xavier_uniform_(self.expand_dim.weight, gain=1)
-    #     init.constant_(self.expand_dim.bias, 0)
+    def forward(self, latent_features, adjacency_matrix, node_mask):
+        """
+        Forward pass through decoder.
+        
+        Args:
+            latent_features: Latent node representations [batch_size, num_nodes, latent_dim]
+            adjacency_matrix: Graph adjacency matrix [batch_size, num_nodes, num_nodes]
+            node_mask: Mask for valid nodes [batch_size, num_nodes, 1]
+            
+        Returns:
+            node_predictions: Predicted node features [batch_size, num_nodes, feature_dim]
+        """
+        # Decode latent features back to hidden dimension
+        decoded_features = self.decode(latent_features, adjacency_matrix)
+        
+        # Project to output node features and apply mask
+        node_predictions = self.output_projection(decoded_features) * node_mask
+        
+        return node_predictions
 
-    def forward(self, h, adj,node_mask):
-        # h = self.expand_dim(h)
-        output = self.decode(h,adj)
-        type_pred = self.out(output)*node_mask
-        return type_pred
+
+class EuclideanGraphDecoder(GraphDecoder):
+    """
+    Euclidean Graph Convolutional Network Decoder.
+    Uses standard GCN or GAT layers in Euclidean space.
+    """
+
+    def __init__(self, latent_feature_dim, hidden_feature_dim, output_feature_dim,
+                 num_decoder_layers, layer_type='GCN', dropout=0.0, edge_dim=1,
+                 normalization_factor=1.0, aggregation_method='sum', 
+                 message_transformation='linear'):
+        super(EuclideanGraphDecoder, self).__init__(latent_feature_dim, hidden_feature_dim, output_feature_dim)
+        self.num_decoder_layers = num_decoder_layers
+        
+        # Get layer dimensions and activation functions
+        self.layer_dimensions, self.activations = get_dim_act(
+            hidden_dim=self.hidden_feature_dim, 
+            act_name='ReLU',
+            num_layers=self.num_decoder_layers,
+            enc=False
+        )
+        
+        # Override first layer dimension for proper decoder behavior
+        # First layer: latent_feature_dim -> hidden_feature_dim
+        # The last layer should output hidden_feature_dim, then output_projection maps to output_feature_dim
+        self.layer_dimensions[0] = self.latent_feature_dim
+        
+        self.manifolds = None  # Euclidean space doesn't use manifolds
+        
+        # Build graph convolution layers
+        graph_layers = []
+        layer_class = self._get_layer_class(layer_type)
+        
+        for i in range(self.num_decoder_layers):
+            input_dim, output_dim = self.layer_dimensions[i], self.layer_dimensions[i + 1]
+            activation = self.activations[i]
+            
+            graph_layers.append(
+                layer_class(
+                    input_dim, output_dim,
+                    dropout=dropout, 
+                    act=activation, 
+                    edge_dim=edge_dim,
+                    normalization_factor=normalization_factor, 
+                    aggregation_method=aggregation_method,
+                    msg_transform=message_transformation, 
+                    sum_transform=message_transformation
+                )
+            )
+        
+        self.graph_layers = nn.Sequential(*graph_layers)
+        self.message_passing = True
+
+    def _get_layer_class(self, layer_type):
+        """Get the appropriate layer class based on layer type."""
+        if layer_type == 'GCN':
+            return GCLayer
+        elif layer_type == 'GAT':
+            return GATLayer
+        else:
+            raise ValueError(f"Unknown layer type: {layer_type}. Supported types: ['GCN', 'GAT']")
+
+    def decode(self, latent_features, adjacency_matrix):
+        """Decode latent features through Euclidean graph layers."""
+        decoded_features = self.graph_layers((latent_features, adjacency_matrix))[0]
+        return decoded_features
+
+class HyperbolicGraphDecoder(GraphDecoder):
+    """
+    Hyperbolic Graph Convolutional Network Decoder.
+    Uses HGCN or HGAT layers operating in hyperbolic manifolds.
+    """
+
+    def __init__(self, latent_feature_dim, hidden_feature_dim, output_feature_dim,
+                 num_decoder_layers, layer_type='HGCN', dropout=0.0, edge_dim=1,
+                 normalization_factor=1.0, aggregation_method='sum', 
+                 message_transformation='linear', aggregation_transformation='linear',
+                 use_normalization=False, manifold_type='PoincareBall', 
+                 curvature=1.0, learnable_curvature=False, use_centroid=False,
+                 input_manifold=None):
+        super(HyperbolicGraphDecoder, self).__init__(latent_feature_dim, hidden_feature_dim, output_feature_dim)
+        self.num_decoder_layers = num_decoder_layers
+        self.use_centroid = use_centroid
+        
+        # Get layer dimensions, activations, and manifolds for hyperbolic layers
+        self.layer_dimensions, self.activations, self.manifolds = get_dim_act_curv(
+            hidden_dim=self.hidden_feature_dim,
+            dim=self.latent_feature_dim, 
+            manifold_name=manifold_type,
+            c=curvature,
+            learnable_c=learnable_curvature,
+            act_name='ReLU',
+            num_layers=self.num_decoder_layers,
+            enc=False  # This is a decoder
+        )
+        
+        # Override first layer dimension for proper decoder behavior
+        # First layer: latent_feature_dim -> hidden_feature_dim
+        # The last layer should output hidden_feature_dim, then output_projection maps to output_feature_dim
+        self.layer_dimensions[0] = self.latent_feature_dim
+        
+        # Use provided input manifold or the computed one
+        if input_manifold is not None:
+            self.manifolds[0] = input_manifold
+        self.manifold = self.manifolds[-1]
+        
+        # Build hyperbolic graph convolution layers
+        hyperbolic_layers = []
+        layer_class = self._get_layer_class(layer_type)
+        
+        for i in range(self.num_decoder_layers):
+            input_manifold_layer, output_manifold_layer = self.manifolds[i], self.manifolds[i + 1]
+            input_dim, output_dim = self.layer_dimensions[i], self.layer_dimensions[i + 1]
+            activation = self.activations[i]
+            
+            hyperbolic_layers.append(
+                layer_class(
+                    input_dim, output_dim, input_manifold_layer, output_manifold_layer, 
+                    dropout=dropout, 
+                    act=activation, 
+                    edge_dim=edge_dim,
+                    normalization_factor=normalization_factor, 
+                    aggregation_method=aggregation_method,
+                    msg_transform=message_transformation, 
+                    sum_transform=aggregation_transformation, 
+                    use_norm=use_normalization
+                )
+            )
+        
+        # Optional centroid distance layer
+        if self.use_centroid:
+            self.centroid_layer = CentroidDistance(
+                self.layer_dimensions[-1], self.layer_dimensions[-1], 
+                self.manifold, dropout
+            )
+        
+        self.graph_layers = nn.Sequential(*hyperbolic_layers)
+        self.message_passing = True
+
+    def _get_layer_class(self, layer_type):
+        """Get the appropriate hyperbolic layer class based on layer type."""
+        if layer_type == 'HGCN':
+            return HGCLayer
+        elif layer_type == 'HGAT':
+            return HGATLayer
+        else:
+            raise ValueError(f"Unknown hyperbolic layer type: {layer_type}. Supported types: ['HGCN', 'HGAT']")
+
+    def decode(self, latent_features, adjacency_matrix):
+        """Decode latent features through hyperbolic graph layers."""
+        # Forward pass through hyperbolic layers
+        decoded_features, _ = self.graph_layers((latent_features, adjacency_matrix))
+        
+        # Apply centroid distance or map to tangent space
+        if self.use_centroid:
+            output = self.centroid_layer(decoded_features)
+        else:
+            # Map from hyperbolic space to tangent space at origin
+            output = self.manifolds[-1].logmap0(decoded_features)
+        
+        return output
+
+class CentroidDistanceDecoder(GraphDecoder):
+    """
+    Decoder using centroid distance computation.
+    Specialized for hyperbolic manifolds.
+    """
+
+    def __init__(self, latent_feature_dim, hidden_feature_dim, output_feature_dim,
+                 dropout=0.0, manifold=None):
+        super(CentroidDistanceDecoder, self).__init__(latent_feature_dim, hidden_feature_dim, output_feature_dim)
+        self.manifold = manifold
+        self.centroid_layer = CentroidDistance(
+            self.hidden_feature_dim, self.latent_feature_dim, 
+            self.manifold, dropout
+        )
+        self.message_passing = True
+
+    def decode(self, latent_features, adjacency_matrix):
+        """Decode using centroid distance computation."""
+        decoded_features = self.centroid_layer(latent_features)
+        return decoded_features
 
 
 class Classifier(nn.Module):
-    def __init__(
-        self, model_dim, classifier_dropout, classifier_bias, manifold=None, n_classes=None
-    ):
+    """
+    Graph-level classifier for few-shot learning tasks.
+    Operates on concatenated node embeddings (mean + pooled representation).
+    """
+    
+    def __init__(self, model_dim, num_classes, classifier_dropout=0.0, classifier_bias=True, manifold=None):
         super().__init__()
         self.manifold = manifold
-
+        self.model_dim = model_dim
+        self.num_classes = num_classes
+        
+        # Input dimension is model_dim * 2 (concatenated mean + pooled embeddings)
         input_dim = model_dim * 2
+        
+        # Build classifier layers
+        layers = []
+        if classifier_dropout > 0.0:
+            layers.append(nn.Dropout(p=classifier_dropout))
+        layers.append(nn.Linear(input_dim, num_classes, bias=classifier_bias))
+        
+        self.cls = nn.Sequential(*layers)
 
-        final_output_dim = n_classes
-
-        classifier_dropout_rate = classifier_dropout
-        classifier_use_bias = classifier_bias
-
-        cls_layers = []
-        if classifier_dropout_rate > 0.0:
-            cls_layers.append(nn.Dropout(p=classifier_dropout_rate))
-        cls_layers.append(nn.Linear(input_dim, final_output_dim, bias=classifier_use_bias))
-
-        self.cls = nn.Sequential(*cls_layers)
-
-    def decode(self, h, adj):
+    def decode(self, h, adj=None):
         """
-        Processes input features through manifold mapping (if any) and self.cls.
-        Returns raw class scores (logits).
+        Classify graph representation.
+        
+        Args:
+            h: Concatenated graph embeddings [batch_size, model_dim * 2]
+            adj: Adjacency matrix (not used, kept for interface consistency)
+            
+        Returns:
+            class_logits: Classification logits [batch_size, num_classes]
         """
-        h_processed = h
+        # h is already the concatenated representation (mean + pooled)
+        processed_h = h
+        
+        # If operating in hyperbolic space, project to tangent space
         if self.manifold is not None:
-            # Use the manifold object's own logmap0 method
-            h_mapped_to_tangent = self.manifold.logmap0(h)
+            processed_h = manifolds_utils.proj_tan0(h, self.manifold)
+        
+        return self.cls(processed_h)
 
-            # Use the custom proj_tan0 function from manifolds_utils
-            h_processed = manifolds_utils.proj_tan0(h_mapped_to_tangent, self.manifold)
+    def forward(self, h, adj=None):
+        """Forward pass through classifier."""
+        return self.decode(h, adj)
 
-        predictions = self.cls(h_processed)
-        return predictions
 
-    def forward(self, h, adj, node_mask):
-        """
-        Classifier's own forward pass.
-        Calls decode to get final predictions and then applies node_mask.
-        """
-        predictions = self.decode(h, adj)
-        return predictions * node_mask
-
-class GCN(Decoder):
+class FermiDiracDecoder(nn.Module):
     """
-    Graph Convolution Decoder.
+    Fermi-Dirac Decoder for edge prediction.
+    
+    Computes edge probabilities based on distances between node representations
+    using a Fermi-Dirac distribution. Supports multiple edge types.
     """
 
-    def __init__(self, config):
-        super(GCN, self).__init__(config)
-        dims, acts = get_dim_act(config, config.model.dec_layers, enc=False)
-        self.manifolds = None
-        gc_layers = []
-        if config.model.layer_type == 'GCN':
-            layer_type = GCLayer
-        elif config.model.layer_type == 'GAT':
-            layer_type = GATLayer
-        else:
-            raise AttributeError
-        for i in range(config.model.dec_layers):
-            in_dim, out_dim = dims[i], dims[i + 1]
-            act = acts[i]
-            gc_layers.append(
-                layer_type(
-                    in_dim, out_dim, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.aggregation_method, config.model.msg_transform
-                )
-            )
-        self.layers = nn.Sequential(*gc_layers)
-        self.message_passing = True
-
-    def decode(self, x,adj):
-        return self.layers((x,adj))[0]
-
-class HGCN(Decoder):
-    """
-    Decoder for HGCAE
-    """
-
-    def __init__(self, config, manifold=None):
-        super(HGCN, self).__init__(config)
-        dims, acts, self.manifolds = get_dim_act_curv(config, config.model.dec_layers, enc=False)
-        if manifold is not None:
-            self.manifolds[0] = manifold
-        self.manifold = self.manifolds[-1]
-        hgc_layers = []
-        if config.model.layer_type == 'HGCN':
-            layer_type = HGCLayer
-        elif config.model.layer_type == 'HGAT':
-            layer_type = HGATLayer
-        else:
-            raise AttributeError
-        for i in range(config.model.dec_layers):
-            m_in, m_out = self.manifolds[i], self.manifolds[i + 1]
-            in_dim, out_dim = dims[i], dims[i + 1]
-            act = acts[i]
-            hgc_layers.append(
-                layer_type(
-                    in_dim, out_dim, m_in, m_out, config.model.dropout, act, config.model.edge_dim,
-                    config.model.normalization_factor,config.model.aggregation_method,
-                    config.model.msg_transform, config.model.sum_transform, config.model.use_norm
-                )
-            )
-        if config.model.use_centroid:
-            self.centroid = CentroidDistance(dims[-1], dims[-1], self.manifold, config.model.dropout)
-        self.layers = nn.Sequential(*hgc_layers)
-        self.message_passing = True
-
-    def decode(self, x, adj):
-        # x = proj_tan0(x, self.manifolds[0])
-        # x = self.manifolds[0].expmap0(x)
-        output,_ = self.layers((x,adj))
-        if self.config.model.use_centroid:
-            output = self.centroid(output)
-        else:
-            output = self.manifolds[-1].logmap0(output)
-        return output
-
-class CentroidDecoder(Decoder):
-    """
-    Decoder for HGCAE
-    """
-
-    def __init__(self, config, manifold=None):
-        super(CentroidDecoder, self).__init__(config)
+    def __init__(self, manifold):
+        super(FermiDiracDecoder, self).__init__()
         self.manifold = manifold
-        self.centroid = CentroidDistance(config.model.hidden_dim, config.model.dim, self.manifold, config.model.dropout)
-        self.message_passing = True
+        # Parameters for Fermi-Dirac distribution (3 edge types)
+        self.r = nn.Parameter(torch.ones((3,), dtype=torch.float))  # Distance thresholds
+        self.t = nn.Parameter(torch.ones((3,), dtype=torch.float))  # Temperature parameters
 
-    def decode(self, x, adj):
-        output = self.centroid(x)
-        return output
-def proj_tan0(u, manifold):
-    if manifold.name == 'Lorentz':
-        narrowed = u.narrow(-1, 0, 1)
-        vals = torch.zeros_like(u)
-        vals[:, 0:1] = narrowed
-        return u - vals
-    else:
-        return u
+    def forward(self, x):
+        """
+        Forward pass for edge prediction.
+        
+        Args:
+            x: Node representations [batch_size, num_nodes, feature_dim]
+            
+        Returns:
+            edge_type: Edge type probabilities [batch_size, num_nodes, num_nodes, 4]
+                      Last dimension: [no_edge, edge_type_1, edge_type_2, edge_type_3]
+        """
+        b, n, _ = x.size()
+        
+        # Compute pairwise representations
+        x_left = x[:, :, None, :]      # [B, N, 1, D]
+        x_right = x[:, None, :, :]     # [B, 1, N, D]
+        
+        # Compute pairwise distances
+        if self.manifold is not None:
+            dist = self.manifold.dist(x_left, x_right, keepdim=True)  # [B, N, N, 1]
+        else:
+            dist = torch.pairwise_distance(x_left, x_right, keepdim=True)  # [B, N, N, 1]
+        
+        # Apply Fermi-Dirac distribution for each edge type
+        edge_type = 1.0 / (
+            torch.exp((dist - self.r[None, None, None, :]) * self.t[None, None, None, :]) + 1.0
+        )  # [B, N, N, 3]
+        
+        # Compute no-edge probability (1 - max edge type probability)
+        no_edge = 1.0 - edge_type.max(dim=-1, keepdim=True)[0]  # [B, N, N, 1]
+        
+        # Concatenate: [no_edge, edge_type_1, edge_type_2, edge_type_3]
+        edge_type = torch.cat([no_edge, edge_type], dim=-1)  # [B, N, N, 4]
+        
+        return edge_type
+
+
+# Backward compatibility aliases
+class EuclideanGCNDecoder(EuclideanGraphDecoder):
+    """
+    Backward compatibility alias for EuclideanGraphDecoder.
+    """
+    
+    def __init__(self, config):
+        super(EuclideanGCNDecoder, self).__init__(
+            latent_feature_dim=config.model.dim,
+            hidden_feature_dim=config.model.hidden_dim,
+            output_feature_dim=config.data.max_feat_num,
+            num_decoder_layers=config.model.dec_layers,
+            layer_type=config.model.layer_type,
+            dropout=config.model.dropout,
+            edge_dim=config.model.edge_dim,
+            normalization_factor=config.model.normalization_factor,
+            aggregation_method=config.model.aggregation_method,
+            message_transformation=config.model.msg_transform
+        )
+
+
+class HyperbolicGCNDecoder(HyperbolicGraphDecoder):
+    """
+    Backward compatibility alias for HyperbolicGraphDecoder.
+    """
+
+    def __init__(self, config, manifold=None):
+        super(HyperbolicGCNDecoder, self).__init__(
+            latent_feature_dim=config.model.dim,
+            hidden_feature_dim=config.model.hidden_dim,
+            output_feature_dim=config.data.max_feat_num,
+            num_decoder_layers=config.model.dec_layers,
+            layer_type=config.model.layer_type,
+            dropout=config.model.dropout,
+            edge_dim=config.model.edge_dim,
+            normalization_factor=config.model.normalization_factor,
+            aggregation_method=config.model.aggregation_method,
+            message_transformation=config.model.msg_transform,
+            aggregation_transformation=config.model.sum_transform,
+            use_normalization=config.model.use_norm,
+            manifold_type=config.model.manifold,
+            curvature=config.model.c,
+            learnable_curvature=config.model.learnable_c,
+            use_centroid=config.model.use_centroid,
+            input_manifold=manifold
+        )
+
+
+# Legacy alias for backward compatibility
+Decoder = GraphDecoder

@@ -8,20 +8,23 @@ import yaml
 import os
 
 # import synthetic.model
-from models.HVAE import HVAE
+from models.GraphVAE import GraphVAE
 from models.ScoreNetwork_A import (
+    ScoreNetworkA,
     ScoreNetworkA_poincare,
     HScoreNetworkA,
-    ScoreNetworkA_poincare_proto,
 )
-from models.ScoreNetwork_X import ScoreNetworkX_poincare, ScoreNetworkX_poincare_proto
+from models.ScoreNetwork_X import (
+    ScoreNetworkX,
+    ScoreNetworkX_GMH,
+    ScoreNetworkX_poincare,
+)
 from utils.sde_lib import VPSDE, VESDE, subVPSDE
 
-from losses import get_sde_loss_fn
-from solver import get_pc_sampler
-from evaluation.mmd import gaussian, gaussian_emd
-from utils.ema import ExponentialMovingAverage
+from utils.losses import get_sde_loss_fn
+from utils.solver import get_pc_sampler
 
+from utils.ema import ExponentialMovingAverage
 
 
 import subprocess
@@ -39,6 +42,7 @@ def load_seed(seed):
     torch.backends.cudnn.benchmark = False
 
     return seed
+
 
 def load_device(config):
     def get_gpu_memory():
@@ -76,55 +80,181 @@ def load_device(config):
             print(f"使用GPU: cuda:{idx}")
         return gpu_indices  # ✅ 注意：返回的是 [0,1] 这样纯编号list
 
-def load_model(config, params):
+
+def load_model(model_config, device):
     """
-    Load model using current configuration structure
+    Load model using model configuration and device.
+
+    Args:
+        model_config: Dictionary containing model parameters including 'type' or 'model_type'
+        device: Target device (str or torch.device)
+
+    Returns:
+        model: Initialized model on the specified device
     """
-    model_type = params["model_type"]
-    # 根据模型类型选择配置
-    if model_type == "ScoreNetworkX_poincare":
-        model = ScoreNetworkX_poincare(**params)
-    elif model_type == "x_poincare_proto":
-        model = ScoreNetworkX_poincare_proto(**params)
+    # 支持新的配置格式，使用 'type' 或 'model_type' 字段
+    model_type = model_config.get("type", model_config.get("model_type"))
+
+    if model_type is None:
+        raise ValueError(
+            "Model type not specified in model_config. Expected 'type' or 'model_type' field."
+        )
+
+    # 根据模型类型选择对应的类并实例化，一个一个地赋值参数
+    if model_type == "ScoreNetworkX":
+        model = ScoreNetworkX(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            depth=int(model_config.get("depth", 3)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+        )
+    elif model_type == "ScoreNetworkX_GMH":
+        model = ScoreNetworkX_GMH(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            depth=int(model_config.get("depth", 3)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            num_linears=int(model_config.get("num_linears", 2)),
+            c_init=int(model_config.get("c_init", 32)),
+            c_hid=int(model_config.get("c_hid", 32)),
+            c_final=int(model_config.get("c_final", 32)),
+            attention_dim=int(model_config.get("attention_dim", model_config.get("adim", 1))),
+            num_heads=int(model_config.get("num_heads", 4)),
+            conv=model_config.get("conv", "GCN"),
+        )
+    elif model_type == "ScoreNetworkX_poincare":
+        model = ScoreNetworkX_poincare(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            depth=int(model_config.get("depth", 3)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            manifold=model_config.get("manifold", None),
+            edge_dim=model_config.get("edge_dim", None),
+            GCN_type=model_config.get("GCN_type", "GCN"),
+        )
+    elif model_type == "ScoreNetworkA":
+        model = ScoreNetworkA(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            max_node_num=int(model_config.get("max_node_num", 9)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            num_layers=int(model_config.get("num_layers", 3)),
+            num_linears=int(model_config.get("num_linears", 2)),
+            c_init=int(model_config.get("c_init", 32)),
+            c_hid=int(model_config.get("c_hid", 32)),
+            c_final=int(model_config.get("c_final", 32)),
+            attention_dim=int(model_config.get("attention_dim", model_config.get("adim", 1))),
+            num_heads=int(model_config.get("num_heads", 4)),
+            conv=model_config.get("conv", "GCN"),
+        )
     elif model_type == "ScoreNetworkA_poincare":
-        model = ScoreNetworkA_poincare(**params)
-    elif model_type == "adj_poincare_proto":
-        model = ScoreNetworkA_poincare_proto(**params)
+        model = ScoreNetworkA_poincare(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            max_node_num=int(model_config.get("max_node_num", 9)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            num_layers=int(model_config.get("num_layers", 3)),
+            num_linears=int(model_config.get("num_linears", 2)),
+            c_init=int(model_config.get("c_init", 32)),
+            c_hid=int(model_config.get("c_hid", 32)),
+            c_final=int(model_config.get("c_final", 32)),
+            attention_dim=int(model_config.get("attention_dim", model_config.get("adim", 1))),
+            num_heads=int(model_config.get("num_heads", 4)),
+            conv=model_config.get("conv", "GCN"),
+            manifold=model_config.get("manifold", None),
+        )
     elif model_type == "HScoreNetworkA":
-        model = HScoreNetworkA(**params)
-    elif model_type == "ae":
-        model = HVAE(config)  # HVAE 需要完整的 config
+        model = HScoreNetworkA(
+            input_feature_dim=int(
+                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            ),
+            max_node_num=int(model_config.get("max_node_num", 9)),
+            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            num_layers=int(model_config.get("num_layers", 3)),
+            num_linears=int(model_config.get("num_linears", 2)),
+            c_init=int(model_config.get("c_init", 32)),
+            c_hid=int(model_config.get("c_hid", 32)),
+            c_final=int(model_config.get("c_final", 32)),
+            attention_dim=int(model_config.get("attention_dim", model_config.get("adim", 1))),
+            num_heads=int(model_config.get("num_heads", 4)),
+            conv=model_config.get("conv", "GCN"),
+            c=model_config.get("c", None),
+            manifold=model_config.get("manifold", None),
+            latent_feature_dim=model_config.get("latent_feature_dim", None),
+            max_feat_num=int(model_config.get("max_feat_num", 32)),
+            nhid=int(model_config.get("nhid", 32)),
+            adim=int(model_config.get("adim", 1)),
+        )
+    elif model_type == "GraphVAE" or model_type == "ae":
+        # GraphVAE 保持原有的参数传递方式，因为它可能有复杂的参数结构
+        model_params = {k: v for k, v in model_config.items() if k not in ["type", "model_type"]}
+        model = GraphVAE(**model_params)
     else:
-        raise ValueError(f"Model Name <{model_type}> is Unknown")
+        raise ValueError(
+            f"Model Name <{model_type}> is Unknown. Available models: "
+            "ScoreNetworkX, ScoreNetworkX_GMH, ScoreNetworkX_poincare, "
+            "ScoreNetworkA, ScoreNetworkA_poincare, "
+            "HScoreNetworkA, GraphVAE"
+        )
+
+    # 将模型移动到指定设备
+    if isinstance(device, list):
+        # 多GPU情况
+        model = torch.nn.DataParallel(model, device_ids=device)
+        model = model.to(f"cuda:{device[0]}")
+    else:
+        model = model.to(device)
 
     return model
 
 
-def load_model_optimizer(config, params):
-    config_train = config.train
-    device = config.device
-    model = load_model(config, params)
-    if isinstance(device, list):
-        if len(device) > 1:
-            model = torch.nn.DataParallel(model, device_ids=device)
-        model = model.to(f"cuda:{device[0]}")
-    else:
-        model = model.to(device)
-    if config.model.manifold == "Euclidean":
+def load_model_optimizer(model_config, device):
+    """
+    Load model and optimizer based on model config and device.
+
+    Args:
+        model_config: Dictionary containing model parameters and training config
+                     Expected to have keys like 'type', 'manifold', 'lr', etc.
+        device: Target device (str or list of devices)
+
+    Returns:
+        tuple: (model, optimizer, scheduler)
+    """
+    # Load the model using the model_config directly
+    model = load_model(model_config, device)
+
+    # Get manifold from model config
+    manifold = model_config.get("manifold", "Euclidean")
+
+    # Get training parameters from model config
+    lr = model_config.get("lr", 1e-4)
+    weight_decay = model_config.get("weight_decay", 0.0)
+    lr_schedule = model_config.get("lr_schedule", False)
+    lr_decay = model_config.get("lr_decay", 0.9)
+
+    # Create optimizer based on manifold
+    if manifold == "Euclidean":
         optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=config_train.lr,
-            weight_decay=config_train.weight_decay,
+            lr=lr,
+            weight_decay=weight_decay,
         )
     else:
         optimizer = geoopt.optim.RiemannianAdam(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=config_train.lr,
-            weight_decay=config_train.weight_decay,
+            lr=lr,
+            weight_decay=weight_decay,
         )
+
+    # Create scheduler if needed
     scheduler = None
-    if config_train.lr_schedule:
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config_train.lr_decay)
+    if lr_schedule:
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_decay)
 
     return model, optimizer, scheduler
 
@@ -166,8 +296,7 @@ def load_sde(config_sde, manifold=None):
     return sde
 
 
-
-def load_loss_fn(config,manifold=None, encoder=None):
+def load_loss_fn(config, manifold=None, encoder=None):
     reduce_mean = config.train.reduce_mean
     sde_x = load_sde(config.sde.x, manifold)
     sde_adj = load_sde(config.sde.adj)
@@ -203,7 +332,7 @@ def load_sampling_fn(config_train, config_module, config_sample, device, manifol
     sde_adj = load_sde(config_train.sde.adj)
 
     # 构建采样函数
-    sampling_fn =  get_pc_sampler(
+    sampling_fn = get_pc_sampler(
         sde_x=sde_x,
         sde_adj=sde_adj,
         device=device,
@@ -335,7 +464,7 @@ def load_sampling_fn(config_train, config_module, config_sample, device, manifol
 def load_ckpt(config, return_ckpt=False):
 
     path = config.sampler.ckp_path
-    ckpt = torch.load(path, map_location=config.device,weights_only=False)
+    ckpt = torch.load(path, map_location=config.device, weights_only=False)
     print(f"{path} loaded")
     ckpt_dict = {
         "config": ckpt["model_config"],
@@ -353,8 +482,8 @@ def load_ckpt(config, return_ckpt=False):
 
 
 def load_model_from_ckpt(config, params, state_dict):
-    model = load_model(config, params)
     device = config.device
+    model = load_model(params, device)
     if "module." in list(state_dict.keys())[0]:
         # strip 'module.' at front; for DataParallel models
         state_dict = {k[7:]: v for k, v in state_dict.items()}
@@ -366,15 +495,3 @@ def load_model_from_ckpt(config, params, state_dict):
     else:
         model = model.to(device)
     return model
-
-
-def load_eval_settings():
-    # Settings for generic graph generation
-    methods = ["degree", "cluster", "orbit", "spectral"]
-    kernels = {
-        "degree": gaussian_emd,
-        "cluster": gaussian_emd,
-        "orbit": gaussian,
-        "spectral": gaussian_emd,
-    }
-    return methods, kernels

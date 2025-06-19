@@ -1,0 +1,202 @@
+# Letter_high Poincaré Three-Stage Training Configuration
+# 完整的三阶段训练实验配置：VAE预训练 -> Score Model训练 -> Meta-test微调
+
+# 实验基本信息
+exp_name: "letter_high_poincare"
+timestamp: "${now}"
+run_name: "${exp_name}_${timestamp}"
+debug: false
+seed: 42
+device: "auto"
+
+# 数据集配置
+data:
+  name: "Letter_high"
+  batch_size: 128
+  max_feat_num: 5
+  max_node_num: 9
+  test_class_num: 4  # 测试类别：[4,6,11,8]
+  train_class_num: 11  # 训练类别：[1,9,10,2,0,3,14,5,12,13,7]
+  test_split: 0.2
+
+# FSL任务配置
+fsl_task:
+  N_way: 4  # 4个测试类别
+  K_shot: 5
+  R_query: 10
+
+# Wandb配置
+wandb:
+  project: "MHGDM_LetterHigh"
+  entity: "huangyr_team"
+  online: true
+  no_wandb: false
+
+# ==================== VAE配置 ====================
+vae:
+  # 编码器配置
+  encoder:
+    type: "HyperbolicGraphEncoder"
+    manifold_type: "PoincareBall"
+    layer_type: "HGAT"
+    curvature: 1.0
+    learnable_curvature: false
+    num_layers: 3
+    hidden_feature_dim: 32
+    latent_feature_dim: 16
+    input_feature_dim: 5
+    dropout: 0.0
+    aggregation_method: "sum"
+    use_normalization: "ln"
+  
+  # 解码器配置
+  decoder:
+    type: "HyperbolicGraphDecoder"
+    manifold_type: "PoincareBall"
+    layer_type: "HGAT"
+    curvature: 1.0
+    learnable_curvature: false
+    num_layers: 3
+    hidden_feature_dim: 32
+    latent_feature_dim: 16
+    output_feature_dim: 5
+    dropout: 0.0
+    aggregation_method: "sum"
+    use_normalization: "ln"
+    use_centroid: false
+  
+  # 损失配置
+  loss:
+    pred_node_class: true
+    pred_edge: false
+    pred_graph_class: false
+    use_kl_loss: true
+    use_base_proto_loss: false
+    use_sep_proto_loss: false
+  
+  # 训练配置
+  train:
+    num_epochs: 1000
+    lr: 0.001
+    lr_decay: 0.999
+    lr_schedule: true
+    weight_decay: 0.0001
+    grad_norm: 1.0
+    
+    # 损失权重
+    rec_weight: 1.0
+    kl_regularization: 0.0001
+    edge_weight: 0.01
+    graph_classification_weight: 0.0
+    base_proto_weight: 0.0
+    sep_proto_weight: 0.0
+    
+    # 测试间隔
+    test_interval: 20
+
+# ==================== Score Model配置 ====================
+score:
+  # X网络配置（节点特征）
+  x:
+    type: "ScoreNetworkX_poincare"
+    manifold_type: "PoincareBall"
+    depth: 3
+    nhid: 32
+    edge_dim: 1
+    GCN_type: "HGCN"
+  
+  # Adj网络配置（邻接矩阵）
+  adj:
+    type: "ScoreNetworkA_poincare"
+    manifold_type: "PoincareBall"
+    nhid: 32
+    num_layers: 3
+    num_linears: 2
+    c_init: 2
+    c_hid: 8
+    c_final: 4
+    adim: 32
+    num_heads: 4
+    conv: "GCN"
+  
+  # SDE配置
+  sde:
+    x:
+      type: "VP"
+      beta_min: 0.1
+      beta_max: 1.0
+      num_scales: 1000
+    adj:
+      type: "VE"
+      beta_min: 0.2
+      beta_max: 1.0
+      num_scales: 1000
+  
+  # 训练配置
+  train:
+    num_epochs: 3000
+    lr: 0.0001
+    lr_decay: 0.999
+    lr_schedule: true
+    weight_decay: 0.0001
+    grad_norm: 1.0
+    ema: 0.999
+    
+    # 测试间隔
+    test_interval: 200
+
+# ==================== Meta-test配置 ====================
+meta_test:
+  # 数据增强配置
+  data_augmentation:
+    use_score_model: true
+    k_augment: 3
+  
+  # 测试配置
+  num_test_tasks: 800  # Letter_high有4个测试类别，适中任务数
+  eval_support: true
+  
+  # 分类器配置
+  classifier:
+    epochs: 100
+    lr: 0.001
+    weight_decay: 0.0001
+    dropout: 0.1
+    bias: true
+    patience: 10
+  
+  # 嵌入配置
+  embedding:
+    pooling_method: "mean_max"  # "mean", "max", "mean_max"
+    normalize: false
+  
+  # 评估配置
+  evaluation:
+    confidence_interval: 0.95
+    save_predictions: true
+  
+  # 日志配置
+  logging:
+    log_interval: 10
+
+# ==================== 采样配置 ====================
+sampler:
+  corrector: "Langevin"
+  n_steps: 1
+  predictor: "Euler"
+  scale_eps_A: 1.0
+  scale_eps_x: 1.0
+  snr_A: 0.25
+  snr_x: 0.25
+  proto_guide: true
+  eps: 0.0001
+  noise_removal: true
+  probability_flow: false
+  use_ema: true
+
+# ==================== 路径配置 ====================
+# 这些路径会在训练过程中自动更新
+paths:
+  vae_checkpoint: null
+  score_checkpoint: null
+  save_dir: "./checkpoints/Letter_high" 

@@ -1,0 +1,73 @@
+# ScoreNetworks Configuration
+# 用于同时配置 ScoreNetworkX 和 ScoreNetworkA 的参数
+
+# ScoreNetworkX 配置 (节点特征分数网络)
+x:
+  # 基础ScoreNetworkX配置
+  basic:
+    model_type: ScoreNetworkX
+    input_feature_dim: ${data.max_feat_num}
+    depth: 5
+    nhid: 32
+  
+  # 带注意力机制的ScoreNetworkX配置  
+  gmh:
+    model_type: ScoreNetworkX_GMH
+    input_feature_dim: ${data.max_feat_num}
+    depth: 5
+    nhid: 32
+    num_linears: 2
+    c_init: 2
+    c_hid: 8
+    c_final: 4
+    adim: 32
+    num_heads: 4
+    conv: GCN
+  
+  # Poincaré球模型配置
+  poincare:
+    model_type: ScoreNetworkX_poincare
+    input_feature_dim: ${data.max_feat_num}
+    depth: 5
+    nhid: 32
+    manifold: Lorentz
+    edge_dim: 1
+    GCN_type: HGCN
+
+# ScoreNetworkA 配置 (邻接矩阵分数网络)
+adj:
+  # 基础ScoreNetworkA配置
+  basic:
+    model_type: ScoreNetworkA
+    input_feature_dim: ${data.max_feat_num}
+    max_node_num: ${data.max_node_num}
+    nhid: 32
+    num_layers: 7
+    num_linears: 2
+    c_init: 2
+    c_hid: 8
+    c_final: 4
+    adim: 32
+    num_heads: 4
+    conv: GCN
+  
+  # Poincaré球模型配置
+  poincare:
+    model_type: ScoreNetworkA_poincare
+    input_feature_dim: ${data.max_feat_num}
+    max_node_num: ${data.max_node_num}
+    nhid: 32
+    num_layers: 7
+    num_linears: 2
+    c_init: 2
+    c_hid: 8
+    c_final: 4
+    adim: 32
+    num_heads: 4
+    conv: GCN
+    manifold: Lorentz
+  
+# 默认配置选择
+defaults:
+  x_type: poincare    # 默认使用poincare配置
+  adj_type: poincare  # 默认使用poincare配置

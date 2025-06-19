@@ -1,0 +1,82 @@
+# configs/vae_trainer.yaml
+# Main training configuration for GraphVAE
+
+# Include model configuration
+defaults:
+  - model: hyperbolic_vae  # Use hyperbolic_vae.yaml from configs/model/
+  - data: ENZYMES
+  - fsl_task: 10shot       # Default few-shot learning task configuration
+  - train: train_encoder
+  - _self_                 # Allow reference to other configurations in this document
+
+# Training configuration
+train:
+  # 1. Training Process Control
+  num_epochs: 1000                  # Number of training epochs
+  grad_norm: 1.0                    # Gradient clipping norm threshold
+  lr_schedule: true                 # Whether to use learning rate scheduling
+  
+  # 2. Loss Function Weights & Regularization
+  rec_weight: 1.0                   # Node-level prediction/reconstruction loss weight
+  kl_regularization: 1.0e-4         # KL divergence regularization coefficient
+  edge_weight: 1.0e-2               # Edge prediction loss weight
+  graph_classification_weight: 0.0  # Graph-level classification loss weight (disabled for VAE)
+  base_proto_weight: 0.0            # Base prototype loss weight
+  sep_proto_weight: 0.0             # Prototype separation loss weight
+  
+  # 3. Optimizer Configuration
+  lr: 0.01                          # Learning rate
+  lr_decay: 0.999                   # Learning rate decay rate
+  weight_decay: 1.0e-4              # Weight decay (L2 regularization)
+  eps: 1.0e-5                       # Epsilon parameter for optimizers like AdamW
+  
+  # 4. Training Flow Control
+  reduce_mean: true                 # Whether to average losses/metrics
+  ema: 0.999                        # Exponential Moving Average decay rate
+  
+  # 5. Logging & Saving Intervals
+  eval_interval: 100                # Evaluation interval (epochs)
+  print_interval: 10                # Print interval (epochs)
+  save_interval: 50                 # Save interval (epochs)
+  num_eval_tasks: 20                # Number of tasks to sample for evaluation
+
+# Data configuration override
+data:
+  batch_size: 64                    # Batch size for training
+
+# Wandb configuration
+wandb:
+  no_wandb: false                   # Whether to disable wandb
+  online: true                      # Online mode (true for online recording)
+  project: MHGDM_VAE                # Project name
+  wandb_usr: huangyr                # Username
+  entity: huangyr_team              # Team name
+
+# Experiment settings
+exp_name: "vae_hyperbolic_${data.name}"
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_name: ${exp_name}_${timestamp}
+device: auto
+seed: 42
+debug: false
+
+# Training mode: ae(autoencoder), score, fsl
+training_mode: ae
+
+# Device configuration
+device_count: 1
+
+# Hydra configuration framework settings
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false
+
+

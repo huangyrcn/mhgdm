@@ -1,0 +1,115 @@
+# Meta Test Configuration for VAE + Score Trainer
+defaults:
+  - data: Letter_high
+  - fsl_task: 10shot
+  - train: train_fsl
+  - _self_
+
+# Experiment settings
+exp_name: "fsl_train"
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_name: ${exp_name}_${timestamp}
+debug: false
+seed: 42
+device: "auto"
+
+# Model checkpoint paths (直接指定VAE和Score模型路径)
+vae_ckpt_path: "checkpoints/Letter_high/vae_exp/default/best.pth"
+score_ckpt_path: "checkpoints/Letter_high/score_exp/default/best.pth"
+
+# 元学习测试配置
+meta_test:
+  num_test_tasks: 100
+  eval_support: true
+  
+  classifier:
+    epochs: 100
+    lr: 0.001
+    weight_decay: 0.0001
+    dropout: 0.1
+    bias: true
+    patience: 10
+  
+  embedding:
+    pooling_method: "mean"  # "mean", "max", "mean_max"
+    normalize: false
+
+# 数据增强配置
+data_augmentation:
+  use_score_model: false
+  k_augment: 1
+
+# 评估配置
+evaluation:
+  confidence_interval: 0.95
+  save_predictions: true
+
+# 日志配置
+logging:
+  log_interval: 10
+
+# 向后兼容的路径配置
+ae_path: ${model_paths.encoder_ckpt_path}
+
+
+# 通用配置
+sample:
+  eps: 0.0001
+  noise_removal: true
+  probability_flow: false
+  seed: 1
+  use_ema: true
+  k_augment: 1
+
+sampler:
+  corrector: Langevin
+  n_steps: 1
+  predictor: Euler
+  scale_eps_A: 1.0
+  scale_eps_x: 1.0
+  snr_A: 0.25
+  snr_x: 0.25
+  proto_guide: true
+  
+ae_ckpt_path: checkpoints/ENZYMES/ae_model_train/20250430_173628/best.pth
+score_ckpt_path: checkpoints/ENZYMES/score_model_train/20250506_122017/best.pth
+
+
+# 基本配置
+seed: 4
+device: auto
+device_count: 1
+
+# Hydra配置
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false
+
+# Wandb配置
+wandb:
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr
+  entity: huangyr_team
+
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.2
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+

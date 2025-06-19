@@ -8,20 +8,30 @@ from torch.nn.modules.module import Module
 from layers.att_layers import DenseAtt
 
 
-def get_dim_act(config, num_layers, enc=True):
+def get_dim_act(hidden_dim, act_name='ReLU', num_layers=3, enc=True):
     """
-    Helper function to get dimension and activation at every layer.
-    :param args:
-    :return:
+    Helper function to get dimension and activation at every layer for Euclidean models.
+    
+    Args:
+        hidden_dim: Hidden layer dimension
+        act_name: Activation function name (e.g., 'ReLU', 'LeakyReLU')
+        num_layers: Number of layers
+        enc: Whether this is for encoder (True) or decoder (False)
+        
+    Returns:
+        dims: List of layer dimensions
+        acts: List of activation functions
     """
-    model_config = config.model
-    act = getattr(nn, model_config.act)
-    acts = [act()] * (num_layers)
+    act_class = getattr(nn, act_name)
+    if isinstance(act_class(), nn.LeakyReLU):
+        acts = [act_class(0.5)] * num_layers
+    else:
+        acts = [act_class()] * num_layers
 
     if enc:
-        dims = [model_config.hidden_dim] * (num_layers+1) # len=args.num_layers+1
+        dims = [hidden_dim] * (num_layers + 1)  # len=num_layers+1
     else:
-        dims = [model_config.dim]+[model_config.hidden_dim] * (num_layers)   # len=args.num_layers+1
+        dims = [hidden_dim] * (num_layers + 1)  # len=num_layers+1
 
     return dims, acts
 
@@ -45,154 +55,252 @@ def unsorted_segment_sum(data, segment_ids, num_segments, normalization_factor, 
     return result
 
 
-class GCLayer(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout=0., act=nn.ReLU(), edge_dim=0, normalization_factor=1,
-                 aggregation_method='sum', msg_transform=True, sum_transform=True):
-        super().__init__()
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.edge_dim = edge_dim
-        self.linear = nn.Linear(in_dim, out_dim, bias=True)
+class GraphConvolutionLayer(nn.Module):
+    """
+    Euclidean Graph Convolution Layer.
+    Improved version with clearer parameter naming and documentation.
+    """
+    
+    def __init__(self, input_feature_dim, output_feature_dim, dropout=0.0, 
+                 activation=nn.ReLU(), edge_feature_dim=0, normalization_factor=1.0,
+                 aggregation_method='sum', use_message_transform=True, 
+                 use_output_transform=True):
+        super(GraphConvolutionLayer, self).__init__()
+        self.input_feature_dim = input_feature_dim
+        self.output_feature_dim = output_feature_dim
+        self.edge_feature_dim = edge_feature_dim
+        self.linear = nn.Linear(input_feature_dim, output_feature_dim, bias=True)
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
-        dense_att_init_edge_dim = 1  # From adj.unsqueeze(-1) as the third argument
-        if self.edge_dim > 0:
-            dense_att_init_edge_dim += 1 # From adj.unsqueeze(-1) as the fourth argument
-        self.att = DenseAtt(out_dim, dropout, edge_dim=dense_att_init_edge_dim)
-        self.msg_transform = msg_transform
-        self.sum_transform = sum_transform
-        self.act = act
-        if msg_transform:
-            self.msg_net = nn.Sequential(
-                nn.Linear(out_dim+1, out_dim),
-                act,
-                nn.Linear(out_dim, out_dim)
-            )
-        if sum_transform:
-            self.out_net = nn.Sequential(
-                nn.Linear(out_dim, out_dim),
-                act,
-                nn.Linear(out_dim, out_dim)
-            )
-        self.ln = nn.LayerNorm(out_dim)
-
-    def forward(self, input):
-        x, adj = input
-        x = self.linear(x)
-        x = self.Agg(x, adj)
-        x = self.ln(x)
-        x = self.act(x)
-        return x, adj
-
-    def Agg(self, x, adj):
-        b, n, _ = x.size()
-        # b x n x 1 x d     0,0,...0,1,1,...1...
-        x_left = torch.unsqueeze(x, 2)
-        x_left = x_left.expand(-1, -1, n, -1)
-        # b x 1 x n x d     0,1,...n-1,0,1,...n-1...
-        x_right = torch.unsqueeze(x, 1)
-        x_right = x_right.expand(-1, n, -1, -1)
-
-        # --- 准备 msg_net 的输入 x_right_ ---
-        if self.msg_transform:
-            # 确保 adj_for_msg 与 x_right 的批处理维度兼容
-            adj_for_msg = adj
-            if adj.dim() == 2: # 假设 adj 是 (n, n)
-                if b == 1:
-                    adj_for_msg = adj.unsqueeze(0) # -> (1, n, n)
-                else: # b > 1
-                    adj_for_msg = adj.unsqueeze(0).expand(b, n, n) # -> (b, n, n)
-            # adj_for_msg 现在应该是 (b, n, n)
-            x_right_ = self.msg_net(torch.cat([x_right, adj_for_msg.unsqueeze(-1)], dim=-1)) # adj_for_msg.unsqueeze(-1) -> (b,n,n,1)
-        else:
-            # 修正：如果 msg_transform 为 False，通常 x_right_ 就是 x_right (或其简单变换)
-            x_right_ = x_right # 直接使用 x_right 作为消息的基础
-
-        # --- 准备 DenseAtt 的参数 ---
-        # 1. adj_for_att (DenseAtt 的第三个参数)
-        # 目标形状: (b, n, n, 1)
-        processed_adj_for_att = adj
-        if adj.dim() == 2: # 输入 adj 是 (n, n)
-            if b == 1:
-                processed_adj_for_att = adj.unsqueeze(0) # -> (1, n, n)
-            else: # b > 1
-                processed_adj_for_att = adj.unsqueeze(0).expand(b, n, n) # -> (b, n, n)
-        # processed_adj_for_att 现在是 (b, n, n)
-        adj_for_att = processed_adj_for_att.unsqueeze(-1) # -> (b, n, n, 1)
-
-        # 2. edge_attr_for_att (DenseAtt 的第四个参数)
-        edge_attr_for_att = None
-        if self.edge_dim > 0: # 基于 GCLayer 初始化时的 self.edge_dim
-            # 与 adj_for_att 使用相同的逻辑从原始 adj 生成
-            # processed_adj_for_att 已经处理过批处理维度，直接使用
-            edge_attr_for_att = processed_adj_for_att.unsqueeze(-1) # -> (b, n, n, 1)
         
-        att = self.att(x_left, x_right, adj_for_att, edge_attr_for_att)
-        msg = x_right_ * att
-        msg = torch.sum(msg, dim=2)
-        if self.sum_transform:
-            msg = self.out_net(msg)
-        x = x + msg
-        return x
+        # Attention mechanism initialization  
+        dense_att_edge_dim = 1  # From adj.unsqueeze(-1) as the third argument
+        if self.edge_feature_dim > 0:
+            dense_att_edge_dim += 1 # From adj.unsqueeze(-1) as the fourth argument
+        self.attention = DenseAtt(output_feature_dim, dropout, edge_dim=dense_att_edge_dim)
+        
+        self.use_message_transform = use_message_transform
+        self.use_output_transform = use_output_transform
+        self.activation = activation
+        
+        # Message transformation network
+        if use_message_transform:
+            self.message_network = nn.Sequential(
+                nn.Linear(output_feature_dim + 1, output_feature_dim),
+                activation,
+                nn.Linear(output_feature_dim, output_feature_dim)
+            )
+            
+        # Output transformation network
+        if use_output_transform:
+            self.output_network = nn.Sequential(
+                nn.Linear(output_feature_dim, output_feature_dim),
+                activation,
+                nn.Linear(output_feature_dim, output_feature_dim)
+            )
+            
+        self.layer_norm = nn.LayerNorm(output_feature_dim)
+
+    def forward(self, input_data):
+        node_features, adjacency_matrix = input_data
+        node_features = self.linear(node_features)
+        node_features = self._aggregate_messages(node_features, adjacency_matrix)
+        node_features = self.layer_norm(node_features)
+        node_features = self.activation(node_features)
+        return node_features, adjacency_matrix
+
+    def _aggregate_messages(self, node_features, adjacency_matrix):
+        """Aggregate messages from neighboring nodes."""
+        batch_size, num_nodes, _ = node_features.size()
+        
+        # Prepare node features for message passing
+        # node_features_left: b x n x 1 x d     0,0,...0,1,1,...1...
+        node_features_left = torch.unsqueeze(node_features, 2)
+        node_features_left = node_features_left.expand(-1, -1, num_nodes, -1)
+        
+        # node_features_right: b x 1 x n x d     0,1,...n-1,0,1,...n-1...
+        node_features_right = torch.unsqueeze(node_features, 1)
+        node_features_right = node_features_right.expand(-1, num_nodes, -1, -1)
+
+        # Apply message transformation if enabled
+        if self.use_message_transform:
+            # Ensure adjacency matrix has correct batch dimensions
+            adj_for_message = adjacency_matrix
+            if adjacency_matrix.dim() == 2: # Input adj is (n, n)
+                if batch_size == 1:
+                    adj_for_message = adjacency_matrix.unsqueeze(0) # -> (1, n, n)
+                else: # batch_size > 1
+                    adj_for_message = adjacency_matrix.unsqueeze(0).expand(batch_size, num_nodes, num_nodes) # -> (b, n, n)
+            
+            # Apply message transformation
+            message_input = torch.cat([node_features_right, adj_for_message.unsqueeze(-1)], dim=-1)
+            transformed_messages = self.message_network(message_input)
+        else:
+            transformed_messages = node_features_right
+
+        # Prepare attention inputs
+        # 1. Adjacency matrix for attention (third parameter)
+        processed_adj_for_attention = adjacency_matrix
+        if adjacency_matrix.dim() == 2: # Input adj is (n, n)
+            if batch_size == 1:
+                processed_adj_for_attention = adjacency_matrix.unsqueeze(0) # -> (1, n, n)
+            else: # batch_size > 1
+                processed_adj_for_attention = adjacency_matrix.unsqueeze(0).expand(batch_size, num_nodes, num_nodes) # -> (b, n, n)
+        
+        adj_for_attention = processed_adj_for_attention.unsqueeze(-1) # -> (b, n, n, 1)
+
+        # 2. Edge attributes for attention (fourth parameter)
+        edge_attr_for_attention = None
+        if self.edge_feature_dim > 0: 
+            edge_attr_for_attention = processed_adj_for_attention.unsqueeze(-1) # -> (b, n, n, 1)
+        
+        # Compute attention weights and aggregate messages
+        attention_weights = self.attention(node_features_left, node_features_right, adj_for_attention, edge_attr_for_attention)
+        aggregated_messages = transformed_messages * attention_weights
+        aggregated_messages = torch.sum(aggregated_messages, dim=2)
+        
+        # Apply output transformation if enabled
+        if self.use_output_transform:
+            aggregated_messages = self.output_network(aggregated_messages)
+            
+        # Residual connection
+        updated_features = node_features + aggregated_messages
+        return updated_features
 
 
-class GATLayer(nn.Module):
+# Backward compatibility alias
+class GCLayer(GraphConvolutionLayer):
+    """
+    Backward compatibility alias for GraphConvolutionLayer.
+    Maps old parameter names to new ones.
+    """
+    
+    def __init__(self, in_dim, out_dim, dropout=0., act=nn.ReLU(), edge_dim=0, 
+                 normalization_factor=1, aggregation_method='sum', msg_transform=True, 
+                 sum_transform=True):
+        super(GCLayer, self).__init__(
+            input_feature_dim=in_dim,
+            output_feature_dim=out_dim,
+            dropout=dropout,
+            activation=act,
+            edge_feature_dim=edge_dim,
+            normalization_factor=normalization_factor,
+            aggregation_method=aggregation_method,
+            use_message_transform=msg_transform,
+            use_output_transform=sum_transform
+        )
 
 
-    def __init__(self, in_dim, out_dim, dropout=0., act=nn.LeakyReLU(0.5), edge_dim=0, normalization_factor=1,
-                 aggregation_method='sum', msg_transform=True, sum_transform=True,use_norm='ln',num_of_heads=4):
-        super(GATLayer, self).__init__()
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.linear_proj = nn.Linear(in_dim, out_dim,bias=False)
-        self.scoring_fn = nn.Linear(2*out_dim//num_of_heads+1,1,bias=False)
-        self.leakyReLU = nn.LeakyReLU(0.2)
-        self.act = act
+class GraphAttentionLayer(nn.Module):
+    """
+    Graph Attention Layer (GAT) for Euclidean spaces.
+    Improved version with clearer parameter naming and documentation.
+    """
+
+    def __init__(self, input_feature_dim, output_feature_dim, dropout=0.0, 
+                 activation=nn.LeakyReLU(0.5), edge_feature_dim=0, normalization_factor=1.0,
+                 aggregation_method='sum', use_message_transform=True, 
+                 use_output_transform=True, normalization_type='ln', num_attention_heads=4):
+        super(GraphAttentionLayer, self).__init__()
+        self.input_feature_dim = input_feature_dim
+        self.output_feature_dim = output_feature_dim
+        self.linear_projection = nn.Linear(input_feature_dim, output_feature_dim, bias=False)
+        self.attention_scoring = nn.Linear(2 * output_feature_dim // num_attention_heads + 1, 1, bias=False)
+        self.leaky_relu = nn.LeakyReLU(0.2)
+        self.activation = activation
         self.dropout = nn.Dropout(dropout)
-        self.num_of_heads = num_of_heads
+        self.num_attention_heads = num_attention_heads
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
-        self.bias = nn.Parameter(torch.Tensor(out_dim))
-        if in_dim != out_dim:
-            self.skip_proj = nn.Linear(in_dim, out_dim, bias=False)
+        self.bias = nn.Parameter(torch.Tensor(output_feature_dim))
+        
+        # Skip connection projection if dimensions don't match
+        if input_feature_dim != output_feature_dim:
+            self.skip_projection = nn.Linear(input_feature_dim, output_feature_dim, bias=False)
         else:
-            self.skip_proj = None
-        self.init_params()
+            self.skip_projection = None
+            
+        self.init_parameters()
 
-    def init_params(self):
-        nn.init.xavier_uniform_(self.linear_proj.weight)
+    def init_parameters(self):
+        """Initialize layer parameters."""
+        nn.init.xavier_uniform_(self.linear_projection.weight)
         if self.bias is not None:
             torch.nn.init.zeros_(self.bias)
 
-    def forward(self, input):
-        x, adj = input
+    def forward(self, input_data):
+        node_features, adjacency_matrix = input_data
 
-        b, n, _ = x.size()
-        x = self.dropout(x)
-        nodes_features_proj = self.linear_proj(x).view(b,n,self.num_of_heads,-1)  # (b,n,n_head,dim_out/n_head)
-        nodes_features_proj = self.dropout(nodes_features_proj)
-        x_left = torch.unsqueeze(nodes_features_proj, 2)
-        x_left = x_left.expand(-1, -1, n, -1, -1)
-        x_right = torch.unsqueeze(nodes_features_proj, 1)
-        x_right = x_right.expand(-1, n, -1, -1, -1)  # (b,n,n,n_head,dim_out/n_head)
-        score = self.scoring_fn(torch.cat([x_left,x_right,adj[...,None,None].expand(-1,-1,-1,self.num_of_heads,-1)],dim=-1)).squeeze()
-        score = self.leakyReLU(score)  # (b,n,n,n_head)
-        edge_mask = (adj > 1e-5).float()
-        pad_mask = 1 - edge_mask
-        zero_vec = -9e15 * pad_mask  # (b,n,n)
+        batch_size, num_nodes, _ = node_features.size()
+        node_features = self.dropout(node_features)
+        
+        # Project node features and reshape for multi-head attention
+        projected_features = self.linear_projection(node_features).view(
+            batch_size, num_nodes, self.num_attention_heads, -1
+        )  # (b, n, num_heads, output_dim/num_heads)
+        projected_features = self.dropout(projected_features)
+        
+        # Prepare features for attention computation
+        features_left = torch.unsqueeze(projected_features, 2)
+        features_left = features_left.expand(-1, -1, num_nodes, -1, -1)
+        features_right = torch.unsqueeze(projected_features, 1)
+        features_right = features_right.expand(-1, num_nodes, -1, -1, -1)  # (b, n, n, num_heads, dim/num_heads)
+        
+        # Compute attention scores
+        attention_input = torch.cat([
+            features_left, 
+            features_right,
+            adjacency_matrix[..., None, None].expand(-1, -1, -1, self.num_attention_heads, -1)
+        ], dim=-1)
+        attention_scores = self.attention_scoring(attention_input).squeeze()
+        attention_scores = self.leaky_relu(attention_scores)  # (b, n, n, num_heads)
+        
+        # Apply edge mask to attention scores
+        edge_mask = (adjacency_matrix > 1e-5).float()
+        padding_mask = 1 - edge_mask
+        masked_scores = -9e15 * padding_mask  # (b, n, n)
 
-        att = score + zero_vec.unsqueeze(-1).expand(-1, -1,-1, self.num_of_heads)  # (b,n,n,n_head) padding的地方会-9e15
-        att = torch.softmax(att,dim=2).transpose(2,3)  # (b,n,n_head,n)
-        att = self.dropout(att).transpose(2, 3).unsqueeze(-1)
-        msg = x_right * att  # (b,n,n,n_head,dim_out/n_head)
-        msg = torch.sum(msg,dim=2)  # (b,n,n_head,dim_out/n_head)
-        if self.in_dim != self.out_dim:
-            x = self.skip_proj(x)  # (b,n,dim_out)
+        attention_scores = attention_scores + masked_scores.unsqueeze(-1).expand(-1, -1, -1, self.num_attention_heads)
+        attention_weights = torch.softmax(attention_scores, dim=2).transpose(2, 3)  # (b, n, num_heads, n)
+        attention_weights = self.dropout(attention_weights).transpose(2, 3).unsqueeze(-1)
+        
+        # Apply attention to aggregate messages
+        messages = features_right * attention_weights  # (b, n, n, num_heads, dim/num_heads)
+        aggregated_messages = torch.sum(messages, dim=2)  # (b, n, num_heads, dim/num_heads)
+        
+        # Apply skip connection if needed
+        if self.input_feature_dim != self.output_feature_dim:
+            node_features = self.skip_projection(node_features)  # (b, n, output_dim)
 
-        x = x+msg.view(b,n,-1)+self.bias  # (b,n,dim_out)
-        # x = self.ln(x)
-        x = self.act(x)
-        return x,adj
+        # Combine original features with aggregated messages
+        updated_features = node_features + aggregated_messages.view(batch_size, num_nodes, -1) + self.bias
+        updated_features = self.activation(updated_features)
+        return updated_features, adjacency_matrix
+
+
+# Backward compatibility alias
+class GATLayer(GraphAttentionLayer):
+    """
+    Backward compatibility alias for GraphAttentionLayer.
+    Maps old parameter names to new ones.
+    """
+
+    def __init__(self, in_dim, out_dim, dropout=0., act=nn.LeakyReLU(0.5), edge_dim=0, 
+                 normalization_factor=1, aggregation_method='sum', msg_transform=True, 
+                 sum_transform=True, use_norm='ln', num_of_heads=4):
+        super(GATLayer, self).__init__(
+            input_feature_dim=in_dim,
+            output_feature_dim=out_dim,
+            dropout=dropout,
+            activation=act,
+            edge_feature_dim=edge_dim,
+            normalization_factor=normalization_factor,
+            aggregation_method=aggregation_method,
+            use_message_transform=msg_transform,
+            use_output_transform=sum_transform,
+            normalization_type=use_norm,
+            num_attention_heads=num_of_heads
+        )
 
 '''
 InnerProductDecdoer implemntation from:
@@ -212,3 +320,18 @@ class InnerProductDecoder(nn.Module):
         cos_dist = emb_in * emb_out
         probs = self.act(cos_dist.sum(1))
         return probs
+
+
+# Backward compatibility function
+def get_dim_act_legacy(config, num_layers, enc=True):
+    """
+    Backward compatibility wrapper for get_dim_act.
+    Uses config object to extract parameters.
+    """
+    model_config = config.model
+    return get_dim_act(
+        hidden_dim=model_config.hidden_dim,
+        act_name=model_config.act,
+        num_layers=num_layers,
+        enc=enc
+    )

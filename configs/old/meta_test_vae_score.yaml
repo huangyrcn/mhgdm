@@ -1,0 +1,112 @@
+defaults:
+  - data : Letter_high
+  - fsl_task : 10shot
+  - train : train_fsl
+  - _self_
+
+# 实验配置
+exp_name: "meta_test_vae_score"
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_name: ${exp_name}_${timestamp}
+debug: false
+
+# 模型路径配置 - VAE Trainer + Score Trainer组合
+model_paths:
+  # VAE Trainer训练的编码器checkpoint
+  encoder_ckpt_path: "checkpoints/Letter_high/vae_exp/20250606_120000/best.pth"
+  # Score Trainer训练的分数模型checkpoint
+  score_ckpt_path: "checkpoints/Letter_high/score_exp/20250606_120000/best.pth"
+
+# 元学习测试配置
+meta_test:
+  num_test_tasks: 100
+  eval_support: true
+  
+  classifier:
+    epochs: 100
+    lr: 0.001
+    weight_decay: 0.0001
+    dropout: 0.1
+    bias: true
+    patience: 10
+  
+  embedding:
+    pooling_method: "mean"  # "mean", "max", "mean_max"
+    normalize: false
+
+# 数据增强配置 - 使用Score Model
+data_augmentation:
+  use_score_model: true
+  k_augment: 3
+
+# 评估配置
+evaluation:
+  confidence_interval: 0.95
+  save_predictions: true
+
+# 日志配置
+logging:
+  log_interval: 10
+
+# 通用配置
+sample:
+  eps: 0.0001
+  noise_removal: true
+  probability_flow: false
+  seed: 1
+  use_ema: true
+  k_augment: ${data_augmentation.k_augment}
+
+sampler:
+  corrector: Langevin
+  n_steps: 1
+  predictor: Euler
+  scale_eps_A: 1.0
+  scale_eps_x: 1.0
+  snr_A: 0.25
+  snr_x: 0.25
+  proto_guide: true
+
+# 基本配置
+seed: 42
+device: auto
+device_count: 1
+
+# Hydra配置
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    disable_existing_loggers: False
+    formatters: null
+    handlers: null
+    root: null
+    version: 1
+  verbose: false
+
+# Wandb配置
+wandb:
+  no_wandb: false
+  online: true
+  project: MHGDM
+  wandb_usr: huangyr
+  entity: huangyr_team
+
+# SDE配置（用于Score Model）
+sde:
+  adj:
+    beta_max: 1.0
+    beta_min: 0.2
+    num_scales: 1000
+    type: VE
+  x:
+    beta_max: 1.0
+    beta_min: 0.1
+    num_scales: 1000
+    type: VP
+
+# 向后兼容配置
+ae_path: ${model_paths.encoder_ckpt_path}
+ae_ckpt_path: ${model_paths.encoder_ckpt_path}
+score_ckpt_path: ${model_paths.score_ckpt_path}

@@ -1,202 +1,95 @@
-# MHGDM Project Rules for Cursor AI Assistant
+# MHGDM Project Navigation Guide
 
-## 🎯 Project Overview
+## Data Loading System
 
-**MHGDM (Manifold Hyperbolic Graph Diffusion Model)** is a research project focused on **Few-Shot Learning (FSL) for graph classification** using advanced geometric deep learning techniques. The project combines **Variational Autoencoders (VAE)**, **Score-based Diffusion Models**, and **Hyperbolic/Euclidean Manifold Learning** for effective graph representation and generation.
+### Optimized Data Utilities
+- **Primary data loader**: [utils/data_utils_optimized.py](mdc:utils/data_utils_optimized.py) - High-performance data loading with 2-3x speedup
+- **Graph utilities**: [utils/graph_utils.py](mdc:utils/graph_utils.py) - Core graph manipulation functions
+- **Legacy loader**: [utils/data_utils.py](mdc:utils/data_utils.py) - Original data loading implementation
 
-### Core Research Goals:
-1. **Graph Representation Learning**: Learn meaningful embeddings for graphs in both Euclidean and hyperbolic spaces
-2. **Few-Shot Graph Classification**: Classify graphs with minimal labeled examples using meta-learning
-3. **Graph Generation**: Generate realistic graphs using score-based diffusion models
-4. **Manifold-aware Learning**: Leverage geometric properties of hyperbolic and Euclidean manifolds
-5. **Prototype-based Learning**: Use prototypical networks for effective few-shot classification
+### Dataset Configurations
+Dataset configs are in `configs/data/` directory:
+- [configs/data/ENZYMES.yaml](mdc:configs/data/ENZYMES.yaml) - 600 graphs, batch_size: 256
+- [configs/data/Letter_high.yaml](mdc:configs/data/Letter_high.yaml) - ~2K graphs, batch_size: 128  
+- [configs/data/Reddit.yaml](mdc:configs/data/Reddit.yaml) - 1.1K graphs, large graphs (3782 nodes max)
+- [configs/data/TRIANGLES.yaml](mdc:configs/data/TRIANGLES.yaml) - 2K graphs, batch_size: 128
 
-## 🏗️ Project Architecture
+## Key Architecture Components
 
-### Main Components:
-- **GraphVAE**: Variational autoencoder for graph encoding/decoding with manifold awareness
-- **Score Networks**: Diffusion models for graph generation (ScoreNetwork_X, ScoreNetwork_A)
-- **Meta-Learning**: Few-shot learning framework with prototypical networks
-- **Manifold Learning**: Support for Poincaré Ball, Hyperboloid, and Euclidean spaces
-- **Data Processing**: Optimized graph data loading and preprocessing pipeline
+## Three-Stage Training Architecture
 
-### Key Training Modes:
-1. **VAE Training** (`trainer.py`): Pre-train graph encoder-decoder with reconstruction and prototype losses
-2. **Score Training** (`score_trainer.py`): Train diffusion models for graph generation
-3. **Meta Testing** (`meta_test.py`): Evaluate few-shot learning performance with classifier heads
+### 🎯 Training Modules
+1. **Stage 1 - Hyperbolic VAE Pretraining**: [vae_trainer.py](mdc:vae_trainer.py) 
+   - Trains hyperbolic graph autoencoder
+   - Supports PoincareBall, Lorentz manifolds
+   - Entry: `python vae_trainer.py training_mode=ae`
 
-## 📁 Project Structure
+2. **Stage 2 - Score Model Training**: [score_trainer.py](mdc:score_trainer.py)
+   - Trains generative score networks (X + Adj)
+   - Uses pretrained VAE encoder
+   - Entry: `python score_trainer.py ae_path=<vae_checkpoint>`
 
+3. **Stage 3 - Meta-Learning**: [meta_test.py](mdc:meta_test.py)
+   - Data augmentation + classifier head fine-tuning
+   - Few-shot learning evaluation
+   - Entry: `python meta_test.py vae_ckpt_path=<vae> score_ckpt_path=<score>`
+
+### 🔧 Experiment Management
+- **Unified Manager**: [experiment_manager.py](mdc:experiment_manager.py) - Orchestrates all three stages
+- **Experiment Configs**: [configs/experiments/](mdc:configs/experiments/) - Complete experiment configurations  
+- **Usage**: `python experiment_manager.py --config configs/experiments/enzymes_three_stage.yaml`
+
+### Training Pipeline
+- **Legacy trainer**: [trainer.py](mdc:trainer.py) - Original training entry point
+
+### Models
+Core models are in `models/` directory:
+- Score networks for adjacency matrices and node features
+- Graph VAE implementations
+- All models integrate with [utils/graph_utils.py](mdc:utils/graph_utils.py)
+
+## Data Loading Best Practices
+
+### Using Optimized Data Loader
+```python
+from utils.data_utils_optimized import MyDatasetOptimized
+
+# Enable optimizations in config
+data_config.enable_optimization = True
+data_config.lazy_tensor_conversion = False  # or True for memory efficiency
+
+# Create dataset with FSL support
+dataset = MyDatasetOptimized(data_config, fsl_task_config)
 ```
-mhgdm/
-├── models/                    # Core model architectures
-│   ├── GraphVAE.py           # Main VAE model with manifold support
-│   ├── Encoders.py           # Graph encoders (Euclidean/Hyperbolic)
-│   ├── Decoders.py           # Graph decoders and classifiers
-│   ├── ScoreNetwork_X.py     # Score network for node features
-│   └── ScoreNetwork_A.py     # Score network for adjacency matrices
-├── utils/                     # Utility functions
-│   ├── data_utils.py         # Graph data loading and processing
-│   ├── graph_utils.py        # Graph manipulation utilities
-│   ├── manifolds_utils.py    # Manifold operations
-│   └── protos_utils.py       # Prototype computation
-├── layers/                    # Custom neural network layers
-│   ├── hyp_layers.py         # Hyperbolic graph layers (HGCN, HGAT)
-│   ├── euc_layers.py         # Euclidean graph layers (GCN, GAT)
-│   └── sc_layers.py          # Score network layers
-├── configs/                   # Hydra configuration files
-│   ├── data/                 # Dataset configurations
-│   ├── model/                # Model architecture configs
-│   ├── train/                # Training configurations
-│   └── fsl_task/             # Few-shot learning task configs
-├── datasets/                  # Graph datasets (ENZYMES, Letter_high, etc.)
-├── evaluation/               # Evaluation metrics and tools
-├── trainer.py                # Main VAE training script
-├── score_trainer.py          # Score model training script
-└── meta_test.py              # Meta-learning evaluation script
-```
 
-## 🔧 Development Guidelines
+### Configuration Requirements
+All dataset configs must include:
+- `name`: Dataset name matching directory in `datasets/`
+- `max_node_num`: Maximum nodes across all graphs
+- `max_feat_num`: Feature dimension
+- `batch_size`: Training batch size
 
-### Code Style & Standards:
-- **Python 3.8+** with PyTorch as the main framework
-- **Type hints** encouraged for function signatures
-- **Docstrings** required for all classes and public methods
-- **Configuration-driven**: Use Hydra configs for all hyperparameters
-- **Modular design**: Separate concerns between models, utils, and training logic
+### Performance Considerations
+- **Small datasets** (ENZYMES, TRIANGLES): ~0.2-0.3s load time
+- **Medium datasets** (Letter_high): ~0.2s load time  
+- **Large datasets** (Reddit): ~90s load time due to 3782 max nodes
+- Optimized loader provides 2-3x speedup over legacy version
 
-### Key Dependencies:
-- `torch` (PyTorch for deep learning)
-- `torch_geometric` (Graph neural networks)
-- `networkx` (Graph manipulation)
-- `hydra-core` (Configuration management)
-- `wandb` (Experiment tracking)
-- `numpy`, `scipy` (Numerical computing)
-- `sklearn` (Machine learning utilities)
+## File Dependencies
+- Data loaders depend on [utils/graph_utils.py](mdc:utils/graph_utils.py) for `graphs_to_tensor`
+- All trainers import graph utilities for masking and node operations
+- Dataset files must be in `datasets/{name}/{name}.txt` format
+- Train/test splits defined in `datasets/{name}/train_test_classes.json`
 
-### Configuration Management:
-- All experiments use **Hydra** for configuration management
-- Configs are hierarchical: `data` + `model` + `train` + `fsl_task`
-- Default configs in `configs/` directory with override capability
-- Experiment tracking via **Weights & Biases (wandb)**
+## Testing Data Loading
+To test new datasets or configurations:
+1. Ensure dataset files exist in proper structure
+2. Create config YAML with correct parameters
+3. Test with `MyDatasetOptimized` class
+4. Verify FSL task sampling works for few-shot learning scenarios
 
-### Model Architecture Patterns:
-- **Encoder-Decoder**: GraphVAE with manifold-aware encoding/decoding
-- **Score Networks**: Separate networks for node features (X) and adjacency (A)
-- **Manifold Support**: Both Euclidean and hyperbolic geometries
-- **Multi-task Learning**: Reconstruction + classification + prototype losses
-
-## 🎯 Few-Shot Learning Framework
-
-### Task Structure:
-- **N-way K-shot**: Classify N classes with K examples each
-- **Support Set**: K examples per class for training classifier head
-- **Query Set**: Test examples for evaluation
-- **Meta-Training**: Train on multiple tasks from training classes
-- **Meta-Testing**: Evaluate on unseen test classes
-
-### Evaluation Protocol:
-- **Deterministic Support Sets**: Fixed support examples for reproducibility
-- **Random Query Sampling**: Random query examples from remaining data
-- **Confidence Intervals**: Statistical significance testing
-- **Multiple Metrics**: Accuracy, F1-score, precision, recall
-
-## 🔬 Research Context
-
-### Related Work:
-- **Graph Neural Networks**: GCN, GAT, and their hyperbolic variants
-- **Few-Shot Learning**: Prototypical networks, MAML, meta-learning
-- **Hyperbolic Geometry**: Poincaré embeddings, hyperbolic neural networks
-- **Diffusion Models**: Score-based generative models, DDPM
-- **Graph Generation**: GraphVAE, GraphRNN, molecular generation
-
-### Datasets:
-- **ENZYMES**: Protein structure classification
-- **Letter_high**: Letter recognition graphs
-- **TRIANGLES**: Synthetic triangle counting
-- **Reddit**: Social network graphs (large-scale)
-
-## 🚀 Performance Optimization
-
-### Data Processing:
-- **Batch Operations**: Vectorized graph operations where possible
-- **Caching**: Processed data caching with pickle
-- **Memory Management**: Efficient tensor operations and garbage collection
-- **Parallel Processing**: Multi-threading for data loading
-
-### Training Optimization:
-- **Mixed Precision**: Use AMP for faster training
-- **Gradient Clipping**: Prevent exploding gradients
-- **Learning Rate Scheduling**: Adaptive learning rate decay
-- **Early Stopping**: Prevent overfitting with patience-based stopping
-
-## 🧪 Experiment Workflow
-
-### Typical Experiment Pipeline:
-1. **Data Preparation**: Load and preprocess graph datasets
-2. **VAE Pre-training**: Train encoder-decoder with reconstruction loss
-3. **Score Model Training**: Train diffusion models for generation (optional)
-4. **Meta-Learning**: Train classifier heads on few-shot tasks
-5. **Evaluation**: Test on unseen classes with confidence intervals
-
-### Key Metrics:
-- **Classification Accuracy**: Primary metric for few-shot performance
-- **Reconstruction Loss**: VAE training quality
-- **KL Divergence**: Regularization term for latent space
-- **Prototype Loss**: Separation between class prototypes
-- **Generation Quality**: Graph statistics (degree, clustering, spectral)
-
-## 🔍 Debugging & Development
-
-### Common Issues:
-- **Memory Issues**: Large graphs can cause OOM, use batch processing
-- **Manifold Operations**: Ensure proper manifold projections and exponential maps
-- **Gradient Flow**: Check for vanishing/exploding gradients in deep models
-- **Configuration Errors**: Validate Hydra config compatibility
-
-### Development Tools:
-- **Wandb**: Experiment tracking and visualization
-- **Hydra**: Configuration management and experiment organization
-- **PyTorch Profiler**: Performance analysis and optimization
-- **NetworkX**: Graph visualization and analysis
-
-## 📊 Code Quality Standards
-
-### Testing:
-- **Unit Tests**: Test individual components (models, utils)
-- **Integration Tests**: Test full training pipelines
-- **Compatibility Tests**: Ensure backward compatibility for data utils
-- **Performance Tests**: Benchmark critical operations
-
-### Documentation:
-- **README**: High-level project description and setup
-- **Docstrings**: Detailed function and class documentation
-- **Config Comments**: Explain hyperparameter choices
-- **Experiment Logs**: Document experiment results and insights
-
-## 🎨 Cursor AI Assistant Guidelines
-
-When helping with this project:
-
-1. **Understand Context**: This is a research project combining graph learning, few-shot learning, and geometric deep learning
-2. **Respect Architecture**: Maintain the modular structure and configuration-driven approach
-3. **Consider Performance**: Optimize for both memory usage and computational efficiency
-4. **Maintain Compatibility**: Ensure changes don't break existing experiments
-5. **Follow Patterns**: Use established patterns for models, configs, and training loops
-6. **Research-Oriented**: Focus on experimental reproducibility and scientific rigor
-
-### When Suggesting Code Changes:
-- **Preserve Interfaces**: Maintain backward compatibility for key APIs
-- **Add Type Hints**: Include proper type annotations
-- **Update Configs**: Modify corresponding Hydra configs when needed
-- **Consider Manifolds**: Be aware of Euclidean vs. hyperbolic operations
-- **Test Thoroughly**: Suggest appropriate tests for new functionality
-
-### When Debugging:
-- **Check Configs**: Verify Hydra configuration compatibility
-- **Validate Shapes**: Ensure tensor shapes match expected dimensions
-- **Monitor Memory**: Watch for memory leaks in graph processing
-- **Trace Gradients**: Check gradient flow in complex model architectures
-- **Verify Manifolds**: Ensure proper manifold operations and projections
-
-This project represents cutting-edge research in geometric deep learning and few-shot learning. Maintain high standards for code quality, experimental rigor, and scientific reproducibility. 
+## Configuration Directories Structure
+- `configs/data/`: Dataset configurations
+- `configs/model/`: Model architecture configs  
+- `configs/train/`: Training hyperparameters
+- `configs/fsl_task/`: Few-shot learning task definitions

@@ -1,0 +1,71 @@
+# configs/model/euclidean_vae.yaml
+# Euclidean Variational AutoEncoder Configuration
+
+graph_vae:
+  type: euclidean_vae
+  
+  # Core model settings
+  pred_node_class: true      # Enable node-level prediction/reconstruction
+  pred_edge: false           # Enable edge prediction  
+  pred_graph_class: false    # Enable graph-level classification
+  
+  # Loss configuration
+  use_kl_loss: true          # Enable KL divergence loss
+  use_base_proto_loss: false # Enable base prototype loss
+  use_sep_proto_loss: false  # Enable prototype separation loss
+  
+  # ==================== Encoder Configuration ====================
+  encoder:
+    type: EuclideanGraphEncoder
+    
+    # Core parameters
+    hidden_feature_dim: 32        # Hidden layer dimension
+    latent_feature_dim: 10        # Latent space dimension  
+    num_layers: 3                 # Number of encoder layers
+    dropout: 0.0                  # Dropout rate
+    edge_dim: 1                   # Edge feature dimension
+    normalization_factor: 1.0     # Normalization factor
+    aggregation_method: sum       # Aggregation method: sum, mean, max
+    message_transformation: true  # Enable message transformation
+    
+    # Euclidean-specific parameters
+    layer_type: GCN               # Layer type: GCN, GAT (Euclidean layers)
+    use_normalization: ln         # Normalization: bn, ln, none
+    
+  # ==================== Decoder Configuration ====================
+  decoder:
+    type: EuclideanGraphDecoder
+    
+    # Core parameters
+    hidden_feature_dim: 32        # Hidden layer dimension
+    num_layers: 3                 # Number of decoder layers
+    dropout: 0.0                  # Dropout rate
+    edge_dim: 1                   # Edge feature dimension
+    normalization_factor: 1.0     # Normalization factor
+    aggregation_method: sum       # Aggregation method: sum, mean, max
+    message_transformation: true  # Enable message transformation
+    
+    # Euclidean-specific parameters
+    layer_type: GCN               # Layer type: GCN, GAT (Euclidean layers)
+    use_normalization: ln         # Normalization: bn, ln, none
+    
+  # ==================== Edge Predictor Configuration ====================
+  edge_predictor:
+    type: FermiDiracDecoder
+    
+    # Parameters
+    loss_type: CrossEntropyLoss   # Loss function type
+    loss_reduction: mean          # Loss reduction method
+    
+  # ==================== Graph Classifier Configuration ====================  
+  graph_classifier:
+    type: Classifier
+    
+    # Parameters
+    dropout: 0.1                  # Classifier dropout rate
+    use_bias: true                # Use bias in classifier layers
+    loss_type: CrossEntropyLoss   # Loss function type
+    
+  # ==================== Node Reconstruction Loss Configuration ====================
+  node_reconstruction_loss:
+    type: OneHotCrossEntropyLoss

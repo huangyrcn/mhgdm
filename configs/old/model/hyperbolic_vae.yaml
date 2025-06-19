@@ -1,0 +1,80 @@
+# configs/model/hyperbolic_vae.yaml
+# Hyperbolic Variational AutoEncoder Configuration
+
+graph_vae:
+  type: hyperbolic_vae
+  
+  # Core model settings
+  pred_node_class: true      # Enable node-level prediction/reconstruction
+  pred_edge: false           # Enable edge prediction  
+  pred_graph_class: false    # Enable graph-level classification
+  
+  # Loss configuration
+  use_kl_loss: true          # Enable KL divergence loss
+  use_base_proto_loss: false # Enable base prototype loss
+  use_sep_proto_loss: false  # Enable prototype separation loss
+  
+  # ==================== Encoder Configuration ====================
+  encoder:
+    type: HyperbolicGraphEncoder
+    
+    # Core parameters
+    hidden_feature_dim: 32        # Hidden layer dimension
+    latent_feature_dim: 10        # Latent space dimension  
+    num_layers: 3                 # Number of encoder layers
+    dropout: 0.0                  # Dropout rate
+    edge_dim: 1                   # Edge feature dimension
+    normalization_factor: 1.0     # Normalization factor
+    aggregation_method: sum       # Aggregation method: sum, mean, max
+    message_transformation: true  # Enable message transformation
+    
+    # Hyperbolic-specific parameters
+    layer_type: HGAT              # Layer type: HGAT, HGC
+    aggregation_transformation: true  # Enable aggregation transformation
+    use_normalization: ln         # Normalization: bn, ln, none
+    manifold_type: PoincareBall   # Manifold type: PoincareBall, Hyperboloid
+    curvature: 1.0                # Curvature parameter
+    learnable_curvature: false    # Whether curvature is learnable
+    
+  # ==================== Decoder Configuration ====================
+  decoder:
+    type: HyperbolicGraphDecoder
+    
+    # Core parameters
+    hidden_feature_dim: 32        # Hidden layer dimension
+    num_layers: 3                 # Number of decoder layers
+    dropout: 0.0                  # Dropout rate
+    edge_dim: 1                   # Edge feature dimension
+    normalization_factor: 1.0     # Normalization factor
+    aggregation_method: sum       # Aggregation method: sum, mean, max
+    message_transformation: true  # Enable message transformation
+    
+    # Hyperbolic-specific parameters
+    layer_type: HGAT              # Layer type: HGAT, HGC
+    aggregation_transformation: true  # Enable aggregation transformation
+    use_normalization: ln         # Normalization: bn, ln, none
+    manifold_type: PoincareBall   # Manifold type: PoincareBall, Hyperboloid
+    curvature: 1.0                # Curvature parameter
+    learnable_curvature: false    # Whether curvature is learnable
+    use_centroid: false           # Use centroid-based decoding
+    
+  # ==================== Edge Predictor Configuration ====================
+  edge_predictor:
+    type: FermiDiracDecoder
+    
+    # Parameters
+    loss_type: CrossEntropyLoss   # Loss function type
+    loss_reduction: mean          # Loss reduction method
+    
+  # ==================== Graph Classifier Configuration ====================  
+  graph_classifier:
+    type: Classifier
+    
+    # Parameters
+    dropout: 0.1                  # Classifier dropout rate
+    use_bias: true                # Use bias in classifier layers
+    loss_type: CrossEntropyLoss   # Loss function type
+    
+  # ==================== Node Reconstruction Loss Configuration ====================
+  node_reconstruction_loss:
+    type: OneHotCrossEntropyLoss

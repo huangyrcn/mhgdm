@@ -2,10 +2,10 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from layers.CentroidDistance import CentroidDistance
-from models.layers import DenseGCNConv, MLP
+from layers.sc_layers import DenseGCNConv, MLP
 from utils.model_utils import get_timestep_embedding
 from utils.graph_utils import mask_adjs, pow_tensor
-from layers.attention import AttentionLayer, HAttentionLayer
+from layers.sc_attention import AttentionLayer, HAttentionLayer
 from utils.graph_utils import mask_x, node_feature_to_matrix
 
 class BaselineNetworkLayer(torch.nn.Module):
@@ -209,95 +209,6 @@ class ScoreNetworkA_poincare(BaselineNetwork):
         score = score * self.mask
         score = mask_adjs(score, flags)
         return score
-
-class ScoreNetworkA_poincare_proto(BaselineNetwork):
-
-    def __init__(self, max_feat_num,max_node_num, nhid, num_layers, num_linears,
-                 c_init, c_hid, c_final, adim, num_heads=4, conv='GCN',manifold=None,**kwargs):
-
-        super().__init__(max_feat_num, max_node_num, nhid, num_layers, num_linears,
-                                                     c_init, c_hid, c_final, adim, num_heads=4, conv='GCN')
-
-        self.adim = adim
-        self.num_heads = num_heads
-        self.conv = conv
-        self.manifold = manifold
-        self.proto_weight = kwargs.get('proto_weight', 0.1)  # Default weight for proto guidance
-        if self.manifold is not None:
-            self.centroid = CentroidDistance(self.nfeat,self.nfeat,manifold)
-        self.layers = torch.nn.ModuleList()
-        for _ in range(self.num_layers):
-            if _ == 0:
-                self.layers.append(AttentionLayer(self.num_linears, self.nfeat, self.nhid, self.nhid, self.c_init,
-                                                  self.c_hid, self.num_heads, self.conv))
-            elif _ == self.num_layers - 1:
-                self.layers.append(AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid,
-                                                  self.c_final, self.num_heads, self.conv))
-            else:
-                self.layers.append(AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid,
-                                                  self.c_hid, self.num_heads, self.conv))
-
-        self.fdim = self.c_hid * (self.num_layers - 1) + self.c_final + self.c_init
-        self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2 * self.fdim, output_dim=1,
-                         use_bn=False, activate_func=F.elu)
-
-        self.temb_net = MLP(num_layers=3, input_dim=self.nfeat, hidden_dim=2 * self.nfeat, output_dim=self.nfeat,
-                            use_bn=False, activate_func=F.elu)
-
-        self.mask = torch.ones([self.max_node_num, self.max_node_num]) - torch.eye(self.max_node_num)
-        self.time_scale = nn.Sequential(
-            nn.Linear(self.nfeat, self.nfeat),
-            nn.ReLU(),
-            nn.Linear(self.nfeat, 1)
-        )
-        self.mask.unsqueeze_(0)
-        self.proto_proj = MLP(          # 3 层 MLP，和 temb_net 写法一致
-            num_layers=3,
-            input_dim=max_feat_num,     # 10
-            hidden_dim=2*max_feat_num,  # 20
-            output_dim=nhid,            # 32
-            use_bn=False,
-            activate_func=F.elu
-        )
-
-    def forward(self, x, adj, flags, t, labels, protos):
-        temb = get_timestep_embedding(t, self.nfeat)
-        if self.manifold is not None:
-            x = self.centroid(x)
-
-        adjc = pow_tensor(adj, self.c_init)
-
-        adj_list = [adjc]
-        for i in range(self.num_layers):
-            x, adjc = self.layers[i](x, adjc, flags)
-            adj_list.append(adjc)
-
-        adjs = torch.cat(adj_list, dim=1).permute(0, 2, 3, 1)   # (B, N, N, L)
-        out_shape = adjs.shape[:-1]  # (B, N, N)
-        score = self.final(adjs).view(*out_shape) * self.time_scale(temb)
-
-        # --- 💡 Proto引导 ---
-        if protos is not None:
-            proto = protos[labels]                       # (B, N, 10)
-            proto = self.proto_proj(proto)               # (B, N, 32)
-            # 计算每个节点到proto的相似性（负欧氏距离）
-            proto_dist = torch.norm(x - proto, dim=-1)  # (B, N)
-            proto_sim = -proto_dist
-
-            proto_diff = proto_sim.unsqueeze(2) - proto_sim.unsqueeze(1)  # (B, N, N)
-            proto_edge_affinity = -torch.abs(proto_diff)  # (B, N, N)
-
-            score = score + self.proto_weight * proto_edge_affinity
-
-        # --- Mask处理 ---
-        self.mask = self.mask.to(score.device)
-        score = score * self.mask
-        score = mask_adjs(score, flags)
-
-        return score
-
-
-
 
 
 class HScoreNetworkA(BaselineNetwork):

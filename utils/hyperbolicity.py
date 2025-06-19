@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from utils.data_utils import load_dataset
+# from utils.data_utils import load_dataset  # 此函数不存在，注释掉
 
 def hyperbolicity_sample(G, num_samples=50000):
     curr_time = time.time()
@@ -19,7 +19,6 @@ def hyperbolicity_sample(G, num_samples=50000):
             node_tuple = np.random.choice(G.nodes(), 4, replace=False)
             s = []
             d01 = nx.shortest_path_length(G, source=node_tuple[0], target=node_tuple[1], weight=None)
-            d23 = nx.shortest_path_length(G, source=node_tuple[2], target=node_tuple[3], weight=None)
             d02 = nx.shortest_path_length(G, source=node_tuple[0], target=node_tuple[2], weight=None)
             d13 = nx.shortest_path_length(G, source=node_tuple[1], target=node_tuple[3], weight=None)
             d03 = nx.shortest_path_length(G, source=node_tuple[0], target=node_tuple[3], weight=None)
@@ -31,7 +30,7 @@ def hyperbolicity_sample(G, num_samples=50000):
             hyps.append((s[-1] - s[-2]) / 2)
         except Exception as e:
             continue
-    print('Time for hyp: ', time.time() - curr_time)
+    tqdm.write('Time for hyp: ', time.time() - curr_time)
     ok = True
     if len(hyps) == 0:
         ok = False
@@ -59,7 +58,7 @@ if __name__ == '__main__':
         if not ok:
             continue
         hyp_l.append(res)
-        print(f'graph:{res}')
+        tqdm.write(f'graph:{res}')
     hyp = torch.Tensor(hyp_l).mean()
-    print('Hyp: ', hyp)
+    tqdm.write('Hyp: ', hyp)
 
