@@ -24,11 +24,16 @@ checkpoints/
 *.model
 
 # ==================== 训练日志和输出 ====================
-# Wandb 日志
-wandb/
+# Wandb 日志 (现在都在 logs/wandb/ 目录下)
+# wandb/ (已移动到 logs/wandb/)
 
-# 其他日志目录
-logs/
+# 其他日志目录 (保留 logs/wandb/ 但忽略其他内容)
+logs/wandb/
+logs/*.log
+logs/*.out
+logs/*.err
+logs/*/
+!logs/wandb/
 logs_train/
 logs_sample/
 runs/
@@ -314,7 +319,8 @@ outputs/
 sacred_logs/
 
 # Weights & Biases
-wandb/
+wandb/  # 根目录的 wandb 文件夹
+# logs/wandb/ 已在上面配置
 
 # ClearML
 .clearml/
