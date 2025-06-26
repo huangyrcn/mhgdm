@@ -126,11 +126,11 @@ def load_model(model_config, device):
         )
     elif model_type == "ScoreNetworkX_poincare":
         model = ScoreNetworkX_poincare(
-            input_feature_dim=int(
-                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            max_feat_num=int(
+                model_config.get("max_feat_num", model_config.get("input_feature_dim", 32))
             ),
             depth=int(model_config.get("depth", 3)),
-            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            nhid=int(model_config.get("nhid", model_config.get("hidden_dim", 32))),
             manifold=model_config.get("manifold", None),
             edge_dim=model_config.get("edge_dim", None),
             GCN_type=model_config.get("GCN_type", "GCN"),
@@ -153,17 +153,17 @@ def load_model(model_config, device):
         )
     elif model_type == "ScoreNetworkA_poincare":
         model = ScoreNetworkA_poincare(
-            input_feature_dim=int(
-                model_config.get("input_feature_dim", model_config.get("max_feat_num", 32))
+            max_feat_num=int(
+                model_config.get("max_feat_num", model_config.get("input_feature_dim", 32))
             ),
             max_node_num=int(model_config.get("max_node_num", 9)),
-            hidden_dim=int(model_config.get("hidden_dim", model_config.get("nhid", 32))),
+            nhid=int(model_config.get("nhid", model_config.get("hidden_dim", 32))),
             num_layers=int(model_config.get("num_layers", 3)),
             num_linears=int(model_config.get("num_linears", 2)),
             c_init=int(model_config.get("c_init", 32)),
             c_hid=int(model_config.get("c_hid", 32)),
             c_final=int(model_config.get("c_final", 32)),
-            attention_dim=int(model_config.get("attention_dim", model_config.get("adim", 1))),
+            adim=int(model_config.get("adim", model_config.get("attention_dim", 1))),
             num_heads=int(model_config.get("num_heads", 4)),
             conv=model_config.get("conv", "GCN"),
             manifold=model_config.get("manifold", None),

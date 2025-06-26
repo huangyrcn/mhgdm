@@ -1,15 +1,15 @@
 # Letter_high Poincaré Three-Stage Training Configuration
 # 完整的三阶段训练实验配置：VAE预训练 -> Score Model训练 -> Meta-test微调
 
-# 实验基本信息
+# ==================== 实验标识配置 ====================
 exp_name: "letter_high_poincare"
-timestamp: "${now}"
-run_name: "${exp_name}_${timestamp}"
+timestamp: "auto"  # 自动生成时间戳，运行时设置
+run_name: "letter_high_poincare_auto"  # 实验运行名称，运行时设置
 debug: false
 seed: 42
 device: "auto"
 
-# 数据集配置
+# ==================== 数据集配置 ====================
 data:
   name: "Letter_high"
   batch_size: 128
@@ -19,18 +19,20 @@ data:
   train_class_num: 11  # 训练类别：[1,9,10,2,0,3,14,5,12,13,7]
   test_split: 0.2
 
-# FSL任务配置
+# ==================== FSL任务配置 ====================
 fsl_task:
   N_way: 4  # 4个测试类别
   K_shot: 5
   R_query: 10
+  meta_test_tasks: 10
 
-# Wandb配置
+# ==================== Wandb配置 ====================
 wandb:
   project: "MHGDM_LetterHigh"
   entity: "huangyr_team"
-  online: true
+  online: false  # 设置为离线避免网络问题
   no_wandb: false
+  output_dir: "logs"  # wandb 输出目录
 
 # ==================== VAE配置 ====================
 vae:
@@ -76,10 +78,11 @@ vae:
   
   # 训练配置
   train:
-    num_epochs: 1000
+    num_epochs: 30
     lr: 0.001
-    lr_decay: 0.999
+    lr_decay: 0.995
     lr_schedule: true
+    scheduler_type: "exponential"
     weight_decay: 0.0001
     grad_norm: 1.0
     
@@ -92,7 +95,12 @@ vae:
     sep_proto_weight: 0.0
     
     # 测试间隔
-    test_interval: 20
+    test_interval: 10
+    
+    # 早停配置
+    enable_early_stopping: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.005
 
 # ==================== Score Model配置 ====================
 score:
@@ -134,7 +142,7 @@ score:
   
   # 训练配置
   train:
-    num_epochs: 3000
+    num_epochs: 200
     lr: 0.0001
     lr_decay: 0.999
     lr_schedule: true
@@ -147,13 +155,16 @@ score:
 
 # ==================== Meta-test配置 ====================
 meta_test:
-  # 数据增强配置
+  # 数据增强配置 - 关键参数：控制是否使用扩散模型扩充数据
   data_augmentation:
-    use_score_model: true
-    k_augment: 3
+    use_diffusion_model: true  # 是否使用扩散模型进行数据扩充
+    use_score_model: true      # 是否使用Score模型（扩散模型的一种实现）
+    k_augment: 5               # 每个样本扩充的数量
+    augment_support: true      # 是否扩充支持集
+    augment_query: false       # 是否扩充查询集
   
   # 测试配置
-  num_test_tasks: 800  # Letter_high有4个测试类别，适中任务数
+  num_test_tasks: 100
   eval_support: true
   
   # 分类器配置
@@ -188,15 +199,36 @@ sampler:
   scale_eps_x: 1.0
   snr_A: 0.25
   snr_x: 0.25
-  proto_guide: true
+  proto_guide: false  # 移除 proto 条件控制
   eps: 0.0001
   noise_removal: true
   probability_flow: false
   use_ema: true
 
 # ==================== 路径配置 ====================
-# 这些路径会在训练过程中自动更新
+# 统一的路径管理：简化路径结构，避免嵌套过深
 paths:
+  # 基础保存目录
+  base_save_dir: "./checkpoints"
+  
+  # 自动生成的具体路径（训练时自动设置）
+  vae_save_dir: "./checkpoints/auto/vae"
+  score_save_dir: "./checkpoints/auto/score"
+  
+  # 检查点路径（运行时自动更新）
   vae_checkpoint: null
   score_checkpoint: null
-  save_dir: "./checkpoints/Letter_high" 
+
+# ==================== 调试模式配置 ====================
+# 可选的快速调试配置，设置debug: true时生效
+debug_config:
+  vae:
+    train:
+      num_epochs: 50
+      test_interval: 5
+  score:
+    train:
+      num_epochs: 500
+      test_interval: 50
+  meta_test:
+    num_test_tasks: 20 

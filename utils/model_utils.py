@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""All functions and modules related to model definition.
-"""
+"""All functions and modules related to model definition."""
 import math
 
+import math
 import torch
 from utils import sde_lib
 import numpy as np
@@ -36,14 +36,17 @@ def get_timestep_embedding(timesteps, embedding_dim):
     # assert len(timesteps.shape) == 1
 
     half_dim = embedding_dim // 2
-    emb = math.log(10000) / (half_dim - 1)
+    emb = math.log(10000) / (half_dim - 1) if half_dim > 1 else math.log(10000)
     emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
     emb = emb.to(device=timesteps.device)
-    emb = timesteps.float() * emb
+
+    # 确保维度匹配：timesteps [batch] -> [batch, 1], emb [half_dim] -> [1, half_dim]
+    emb = timesteps.float()[:, None] * emb[None, :]  # [batch, half_dim]
     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
     if embedding_dim % 2 == 1:  # zero pad
         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
     return emb
+
 
 def register_model(cls=None, *, name=None):
     """A decorator for registering model classes."""
@@ -54,7 +57,7 @@ def register_model(cls=None, *, name=None):
         else:
             local_name = name
         if local_name in _MODELS:
-            raise ValueError(f'Already registered model with name: {local_name}')
+            raise ValueError(f"Already registered model with name: {local_name}")
         _MODELS[local_name] = cls
         return cls
 
@@ -76,7 +79,10 @@ def get_sigmas(config):
       sigmas: a jax numpy arrary of noise levels
     """
     sigmas = np.exp(
-        np.linspace(np.log(config.model.sigma_max), np.log(config.model.sigma_min), config.model.num_scales))
+        np.linspace(
+            np.log(config.model.sigma_max), np.log(config.model.sigma_min), config.model.num_scales
+        )
+    )
 
     return sigmas
 
@@ -89,20 +95,20 @@ def get_ddpm_params(config):
     beta_end = config.model.beta_max / config.model.num_scales
     betas = np.linspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
 
-    alphas = 1. - betas
+    alphas = 1.0 - betas
     alphas_cumprod = np.cumprod(alphas, axis=0)
     sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
-    sqrt_1m_alphas_cumprod = np.sqrt(1. - alphas_cumprod)
+    sqrt_1m_alphas_cumprod = np.sqrt(1.0 - alphas_cumprod)
 
     return {
-        'betas': betas,
-        'alphas': alphas,
-        'alphas_cumprod': alphas_cumprod,
-        'sqrt_alphas_cumprod': sqrt_alphas_cumprod,
-        'sqrt_1m_alphas_cumprod': sqrt_1m_alphas_cumprod,
-        'beta_min': beta_start * (num_diffusion_timesteps - 1),
-        'beta_max': beta_end * (num_diffusion_timesteps - 1),
-        'num_diffusion_timesteps': num_diffusion_timesteps
+        "betas": betas,
+        "alphas": alphas,
+        "alphas_cumprod": alphas_cumprod,
+        "sqrt_alphas_cumprod": sqrt_alphas_cumprod,
+        "sqrt_1m_alphas_cumprod": sqrt_1m_alphas_cumprod,
+        "beta_min": beta_start * (num_diffusion_timesteps - 1),
+        "beta_max": beta_end * (num_diffusion_timesteps - 1),
+        "num_diffusion_timesteps": num_diffusion_timesteps,
     }
 
 
@@ -162,6 +168,7 @@ def get_score_fn(sde, model, train=False, continuous=False):
     model_fn = get_model_fn(model, train=train)
 
     if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
+
         def score_fn(x, t):
             # Scale neural network output by standard deviation and flip sign
             if continuous or isinstance(sde, sde_lib.subVPSDE):
@@ -181,6 +188,7 @@ def get_score_fn(sde, model, train=False, continuous=False):
             return score
 
     elif isinstance(sde, sde_lib.VESDE):
+
         def score_fn(x, t):
             if continuous:
                 labels = sde.marginal_prob(torch.zeros_like(x), t)[1]

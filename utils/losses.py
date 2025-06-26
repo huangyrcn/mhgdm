@@ -19,17 +19,17 @@ def get_score_fn(sde, model, train=True, continuous=True):
         分数函数。
     """
     if not train:
-        model.eval() # 如果不是训练模式，则将模型设置为评估模式
+        model.eval()  # 如果不是训练模式，则将模型设置为评估模式
     model_fn = model
 
     if isinstance(sde, VPSDE) or isinstance(sde, subVPSDE):
 
-        def score_fn(x, adj, flags, t,labels=None, protos=None): # 保留 protos 参数
+        def score_fn(x, adj, flags, t):  # 移除 labels 参数
             # 通过标准差缩放神经网络输出并翻转符号
             if continuous:
-                t_labels = t * 999 # 缩放时间标签
-                # 将 protos 传递给 model_fn 调用
-                score = model_fn(x, adj, flags, t_labels,labels, protos)
+                t_labels = t * 999  # 缩放时间标签
+                # 移除 labels 参数传递
+                score = model_fn(x, adj, flags, t_labels)
                 # 获取边际概率的标准差
                 std = sde.marginal_prob(torch.zeros_like(adj), t)[1]
             else:
@@ -41,13 +41,13 @@ def get_score_fn(sde, model, train=True, continuous=True):
 
     elif isinstance(sde, VESDE):
 
-        def score_fn(x, adj, flags, t,labels=None, protos=None): # 保留 protos 参数
+        def score_fn(x, adj, flags, t):  # 移除 labels 参数
             if continuous:
                 # 计算时间标签
-                t_labels= sde.T - t
+                t_labels = sde.T - t
                 t_labels *= sde.N - 1
-                # 将 protos 传递给 model_fn 调用
-                score = model_fn(x, adj, flags,t_labels, labels, protos)
+                # 移除 labels 参数传递
+                score = model_fn(x, adj, flags, t_labels)
             else:
                 raise NotImplementedError(f"不支持离散时间")
 
@@ -60,15 +60,15 @@ def get_score_fn(sde, model, train=True, continuous=True):
 
 
 def get_sde_loss_fn(
-    sde_x, # 特征的 SDE
-    sde_adj, # 邻接矩阵的 SDE
-    train=True, # 是否处于训练模式
-    reduce_mean=False, # 是否对损失进行平均
-    continuous=True, # 是否使用连续时间
-    likelihood_weighting=False, # 是否使用似然加权
-    eps=1e-5, # 用于避免数值问题的小常数
-    manifold=None, # 流形对象（如果适用）
-    encoder=None, # 编码器（如果适用）
+    sde_x,  # 特征的 SDE
+    sde_adj,  # 邻接矩阵的 SDE
+    train=True,  # 是否处于训练模式
+    reduce_mean=False,  # 是否对损失进行平均
+    continuous=True,  # 是否使用连续时间
+    likelihood_weighting=False,  # 是否使用似然加权
+    eps=1e-5,  # 用于避免数值问题的小常数
+    manifold=None,  # 流形对象（如果适用）
+    encoder=None,  # 编码器（如果适用）
 ):
     """获取 SDE 损失函数。
 
@@ -92,7 +92,7 @@ def get_sde_loss_fn(
         torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model_x, model_adj, x, adj, labels, protos=None):
+    def loss_fn(model_x, model_adj, x, adj):
         """计算 SDE 损失。
 
         Args:
@@ -100,7 +100,6 @@ def get_sde_loss_fn(
             model_adj: 邻接矩阵分数模型。
             x: 特征张量。
             adj: 邻接矩阵张量。
-            labels: 标签（如果适用）。
         Returns:
             特征损失和邻接矩阵损失的元组。
         """
@@ -121,12 +120,12 @@ def get_sde_loss_fn(
 
         # 随机采样时间 t
         t = torch.rand((adj.shape[0], 1, 1), device=adj.device) * (sde_adj.T - eps) + eps
-       
+
         # region 生成扰动数据
-        
+
         # 特征扰动数据
-        z_x = gen_noise(x, flags, sym=False) # 生成特征噪声
-        mean_x, std_x = sde_x.marginal_prob(x, t) # 计算特征的边际均值和标准差
+        z_x = gen_noise(x, flags, sym=False)  # 生成特征噪声
+        mean_x, std_x = sde_x.marginal_prob(x, t)  # 计算特征的边际均值和标准差
 
         # 如果使用流形，则在切空间中添加噪声并映射回流形
         if manifold is not None:
@@ -134,20 +133,20 @@ def get_sde_loss_fn(
         else:
             # 否则，直接添加高斯噪声
             perturbed_x = mean_x + std_x * z_x
-        perturbed_x = mask_x(perturbed_x, flags) # 应用节点掩码
-       
-        # 结构扰动数据
-        z_adj = gen_noise(adj, flags, sym=True) # 生成邻接矩阵噪声（对称）
-        mean_adj, std_adj = sde_adj.marginal_prob(adj, t) # 计算邻接矩阵的边际均值和标准差
-        perturbed_adj = mean_adj + std_adj * z_adj # 添加噪声
-        perturbed_adj = mask_adjs(perturbed_adj, flags) # 应用邻接矩阵掩码
+        perturbed_x = mask_x(perturbed_x, flags)  # 应用节点掩码
 
-        # endregion 
+        # 结构扰动数据
+        z_adj = gen_noise(adj, flags, sym=True)  # 生成邻接矩阵噪声（对称）
+        mean_adj, std_adj = sde_adj.marginal_prob(adj, t)  # 计算邻接矩阵的边际均值和标准差
+        perturbed_adj = mean_adj + std_adj * z_adj  # 添加噪声
+        perturbed_adj = mask_adjs(perturbed_adj, flags)  # 应用邻接矩阵掩码
+
+        # endregion
 
         # region 计算score
         # 计算扰动数据的分数
-        score_x = score_fn_x(perturbed_x, perturbed_adj, flags, t,labels,protos)
-        score_adj = score_fn_adj(perturbed_x, perturbed_adj, flags, t,labels,protos)
+        score_x = score_fn_x(perturbed_x, perturbed_adj, flags, t)
+        score_adj = score_fn_adj(perturbed_x, perturbed_adj, flags, t)
         # endregion
 
         # 计算损失
@@ -171,17 +170,17 @@ def get_sde_loss_fn(
                     logp = -1 * v**2 / (2 * std_x**2).sum(-1, keepdims=True) + (
                         dim - 1
                     ) * torch.log(sqrt_c_dist / torch.sinh(sqrt_c_dist))
-                    
+
                     # 计算目标分数（对数概率密度的梯度）
                     (target,) = torch.autograd.grad(logp.sum(), xt)
-                    
-                    target = mask_x(target, flags) # 应用节点掩码
+
+                    target = mask_x(target, flags)  # 应用节点掩码
                 # 计算分数和目标之间的平方误差
                 losses_x = torch.square(score_x - target)
             else:
                 # 在欧氏空间计算损失
                 losses_x = torch.square(score_x * std_x + z_x)  # 计算分数匹配损失
-            losses_x = reduce_op(losses_x, dim=-1) # 聚合特征损失
+            losses_x = reduce_op(losses_x, dim=-1)  # 聚合特征损失
             # 计算邻接矩阵的分数匹配损失
             losses_adj = torch.square(score_adj * std_adj + z_adj)
         else:
@@ -202,9 +201,9 @@ def get_sde_loss_fn(
 
         # 返回归一化的损失
         return (
-            torch.sum(losses_x.view(-1)) / flags.sum(), # 特征损失除以节点数
-            torch.sum(losses_adj.view(-1)) / adj_flags.sum(), # 邻接矩阵损失除以边数（或可能的边数）
+            torch.sum(losses_x.view(-1)) / flags.sum(),  # 特征损失除以节点数
+            torch.sum(losses_adj.view(-1))
+            / adj_flags.sum(),  # 邻接矩阵损失除以边数（或可能的边数）
         )
-
 
     return loss_fn

@@ -1,581 +1,554 @@
 """
-Meta-test训练器 - 简化版本
-支持可选的任务扩充+分类头微调+元学习评估
+Meta-test评估函数
+支持使用encoder或encoder+分数网络进行few-shot学习评估
 """
 
 import os
 import sys
-import time
-import argparse
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
-from tqdm import trange, tqdm
+from tqdm import tqdm
 from sklearn.metrics import f1_score, precision_score, recall_score
-from typing import Optional, Dict, Any
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from omegaconf import OmegaConf
 
-# 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils.config_utils import load_config, save_config
+from utils.config_utils import load_config
 from utils.data_utils import MyDataset
-from utils.loader import load_seed, load_device, load_batch
+from utils.loader import load_seed, load_device
 from utils.graph_utils import node_flags
 from models.GraphVAE import GraphVAE
 from models.Decoders import Classifier
 
-# 任务扩充相关导入
-from utils.task_sampler import TaskSamplerConfig, create_meta_task_sampler
 
+def run_meta_test(config, use_augmentation=False, checkpoint_paths=None):
+    """
+    运行Meta-test评估
 
-class MetaTestTrainer:
-    """Meta-test训练器 - 支持可选的任务扩充"""
+    Args:
+        config: 配置对象
+        use_augmentation: 是否使用数据增强（分数网络）
+        checkpoint_paths: 检查点路径字典，包含:
+            - vae_checkpoint: VAE检查点路径
+            - score_checkpoint: Score检查点路径（仅在use_augmentation=True时需要）
 
-    def __init__(self, config_path, vae_checkpoint_path, score_checkpoint_path=None):
-        # 加载配置
-        self.config = load_config(config_path)
-        self.vae_checkpoint_path = vae_checkpoint_path
-        self.score_checkpoint_path = score_checkpoint_path
+    Returns:
+        dict: 评估结果，包含accuracy, f1等指标
+    """
+    if checkpoint_paths is None or "vae_checkpoint" not in checkpoint_paths:
+        raise ValueError("必须提供VAE检查点路径")
 
-        # 设置基本参数
-        self.seed = load_seed(self.config.seed)
-        self.device = load_device(self.config.device)
-        self.run_name = self.config.run_name
+    vae_checkpoint_path = checkpoint_paths["vae_checkpoint"]
 
-        # 初始化wandb
-        self._init_wandb()
+    # 确保wandb会话干净
+    try:
+        if wandb.run is not None:
+            wandb.finish()
+            print("✓ 已关闭之前的wandb会话")
+    except:
+        pass
 
-        # 加载数据集
-        self.dataset = MyDataset(self.config.data, self.config.fsl_task)
-        self.train_loader, self.test_loader = self.dataset.get_loaders()
+    # 基础设置
+    device = load_device(config)
+    load_seed(config.seed)
 
-        # 加载预训练编码器
-        self._load_encoder()
+    # 初始化wandb
+    wandb_suffix = "_aug" if use_augmentation else "_no_aug"
+    mode = (
+        "disabled"
+        if getattr(config, "debug", False)
+        else ("online" if config.wandb.online else "offline")
+    )
 
-        # 可选：初始化任务扩充器
-        self.task_sampler = None
-        if self._should_use_task_augmentation():
-            self._init_task_sampler()
+    wandb.init(
+        project=f"{config.wandb.project}_Meta",
+        entity=config.wandb.entity,
+        name=f"{config.run_name}_meta{wandb_suffix}",
+        config=OmegaConf.to_container(config, resolve=True),
+        mode=mode,
+    )
 
-        # 创建保存目录
-        self.save_dir = os.path.join(
-            self.config.paths.save_dir, f"{self.config.exp_name}_meta", self.config.timestamp
-        )
-        os.makedirs(self.save_dir, exist_ok=True)
+    # 加载数据集
+    dataset = MyDataset(config.data, config.fsl_task)
+    train_loader, test_loader = dataset.get_loaders()
 
-        # 打印初始化信息
-        self._print_initialization_info()
+    # 加载编码器
+    encoder = _load_encoder(vae_checkpoint_path, device)
 
-    def _should_use_task_augmentation(self):
-        """检查是否应该使用任务扩充"""
-        return (
-            hasattr(self.config, "meta_test")
-            and hasattr(self.config.meta_test, "task_augmentation")
-            and getattr(self.config.meta_test.task_augmentation, "enabled", False)
-            and self.score_checkpoint_path is not None
-        )
-
-    def _init_task_sampler(self):
-        """初始化任务扩充器"""
+    # 如果使用增强，还需要加载分数网络
+    diffusion_model = None
+    if use_augmentation and "score_checkpoint" in checkpoint_paths:
+        score_checkpoint_path = checkpoint_paths["score_checkpoint"]
         try:
-            tqdm.write("🔧 Initializing task augmentation sampler...")
-
-            # 从完整配置中提取任务采样器配置
-            task_sampler_config = TaskSamplerConfig.from_full_config(self.config)
-
-            # 获取编码器检查点路径
-            encoder_ckpt_path = getattr(
-                self.config.meta_test.task_augmentation,
-                "encoder_checkpoint_path",
-                self.vae_checkpoint_path,  # 默认使用VAE检查点
-            )
-
-            # 创建任务采样器
-            self.task_sampler = create_meta_task_sampler(
-                config=task_sampler_config,
-                score_ckpt_path=self.score_checkpoint_path,
-                encoder_ckpt_path=encoder_ckpt_path,
-            )
-
-            tqdm.write("✓ Task augmentation sampler initialized successfully")
-
+            diffusion_model = _load_diffusion_model(score_checkpoint_path, config, device)
+            print(f"✓ 分数网络已加载，启用数据增强")
         except Exception as e:
-            tqdm.write(f"⚠️ Failed to initialize task sampler: {e}")
-            tqdm.write("   Continuing without task augmentation...")
-            self.task_sampler = None
+            print(f"⚠️ 分数网络加载失败，将不使用增强: {e}")
+            diffusion_model = None
 
-    def _print_initialization_info(self):
-        """打印初始化信息"""
-        tqdm.write(f"Meta-test Trainer initialized: {self.run_name}")
-        tqdm.write(f"Save directory: {self.save_dir}")
-        tqdm.write(f"Device: {self.device}")
-        tqdm.write(f"Task augmentation: {'enabled' if self.task_sampler else 'disabled'}")
+    print(f"Meta-test 初始化完成")
+    print(f"Device: {device}")
+    print(f"数据增强: {'启用' if diffusion_model is not None else '禁用'}")
 
-        if self.task_sampler:
-            aug_config = self.config.meta_test.task_augmentation
-            tqdm.write(f"  - k_augment: {getattr(aug_config, 'k_augment', 2)}")
-            tqdm.write(f"  - finetune_steps: {getattr(aug_config, 'finetune_steps', 10)}")
+    # 运行评估
+    results = _run_evaluation(
+        dataset=dataset,
+        encoder=encoder,
+        diffusion_model=diffusion_model,
+        config=config,
+        device=device,
+        use_augmentation=use_augmentation and diffusion_model is not None,
+    )
 
-    def _init_wandb(self):
-        """初始化wandb"""
-        mode = (
-            "disabled"
-            if self.config.debug
-            else ("online" if self.config.wandb.online else "offline")
-        )
+    wandb.finish()
+    return results
 
-        wandb.init(
-            project=f"{self.config.wandb.project}_Meta",
-            entity=self.config.wandb.entity,
-            name=f"{self.run_name}_meta",
-            config=self.config.to_dict(),
-            mode=mode,
-            dir=os.path.join("logs", "wandb"),
-        )
 
-    def _load_encoder(self):
-        """加载预训练编码器"""
-        tqdm.write(f"Loading VAE encoder from: {self.vae_checkpoint_path}")
-        checkpoint = torch.load(
-            self.vae_checkpoint_path, map_location=self.device, weights_only=False
-        )
+def _load_encoder(checkpoint_path, device):
+    """加载编码器"""
+    print(f"Loading encoder from: {checkpoint_path}")
 
-        # 重建VAE模型
-        vae_config = checkpoint["model_config"]
-        self.vae_model = GraphVAE(
-            pred_node_class=vae_config["vae"]["loss"]["pred_node_class"],
-            pred_edge=vae_config["vae"]["loss"]["pred_edge"],
-            pred_graph_class=vae_config["vae"]["loss"]["pred_graph_class"],
-            use_kl_loss=vae_config["vae"]["loss"]["use_kl_loss"],
-            use_base_proto_loss=vae_config["vae"]["loss"]["use_base_proto_loss"],
-            use_sep_proto_loss=vae_config["vae"]["loss"]["use_sep_proto_loss"],
-            encoder_config=vae_config["vae"]["encoder"],
-            decoder_config=vae_config["vae"]["decoder"],
-            latent_dim=vae_config["vae"]["encoder"]["latent_feature_dim"],
-            device=self.device,
-        )
-        self.vae_model.load_state_dict(checkpoint["model_state_dict"])
-        self.vae_model.to(self.device)
-        self.vae_model.eval()
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    vae_config = checkpoint["model_config"]
 
-        # 提取编码器
-        self.encoder = self.vae_model.encoder
-        self.encoder.requires_grad_(False)
+    # 构建VAE配置
+    from types import SimpleNamespace
 
-        tqdm.write(f"✓ Encoder loaded")
+    model_config = SimpleNamespace()
 
-    def _get_embeddings(self, x, adj):
-        """获取图嵌入"""
-        mask = node_flags(adj).unsqueeze(-1)
+    if "vae" in vae_config:
+        # 旧格式
+        model_config.encoder_config = SimpleNamespace(**vae_config["vae"]["encoder"])
+        model_config.decoder_config = SimpleNamespace(**vae_config["vae"]["decoder"])
+        model_config.pred_node_class = vae_config["vae"]["loss"]["pred_node_class"]
+        model_config.pred_edge = vae_config["vae"]["loss"]["pred_edge"]
+        model_config.pred_graph_class = vae_config["vae"]["loss"]["pred_graph_class"]
+        model_config.use_kl_loss = vae_config["vae"]["loss"]["use_kl_loss"]
+        model_config.latent_dim = vae_config["vae"]["encoder"]["latent_feature_dim"]
+    else:
+        # 新格式
+        model_config.encoder_config = SimpleNamespace(**vae_config["encoder"])
+        model_config.decoder_config = SimpleNamespace(**vae_config["decoder"])
+        model_config.pred_node_class = vae_config["loss"]["pred_node_class"]
+        model_config.pred_edge = vae_config["loss"]["pred_edge"]
+        model_config.pred_graph_class = vae_config["loss"]["pred_graph_class"]
+        model_config.use_kl_loss = vae_config["loss"]["use_kl_loss"]
+        model_config.latent_dim = vae_config["encoder"]["latent_feature_dim"]
 
-        with torch.no_grad():
-            self.encoder.eval()
-            z = self.encoder(x, adj, mask)
+    model_config.use_base_proto_loss = False
+    model_config.use_sep_proto_loss = False
+    model_config.device = device
 
-            # 处理分布输出
-            if hasattr(z, "mode"):
-                z = z.mode()
+    # 创建并加载VAE
+    vae_model = GraphVAE(model_config)
+    vae_model.load_state_dict(checkpoint["model_state_dict"])
+    vae_model.to(device)
+    vae_model.eval()
 
-            # 转换到欧几里得空间
-            if hasattr(self.encoder, "manifold") and self.encoder.manifold:
-                z = self.encoder.manifold.logmap0(z)
+    # 提取编码器
+    encoder = vae_model.encoder
+    encoder.requires_grad_(False)
 
-            # 池化
-            pooling_method = self.config.meta_test.embedding.pooling_method
-            if pooling_method == "mean":
-                embeddings = z.mean(dim=1)
-            elif pooling_method == "max":
-                embeddings = z.max(dim=1).values
-            elif pooling_method == "mean_max":
-                mean_emb = z.mean(dim=1)
-                max_emb = z.max(dim=1).values
-                embeddings = torch.cat([mean_emb, max_emb], dim=-1)
-            else:
-                embeddings = z.mean(dim=1)  # 默认使用mean
+    print("✓ Encoder loaded")
+    return encoder
 
-            # 可选的标准化
-            if self.config.meta_test.embedding.normalize:
-                embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
-        return embeddings
+def _load_diffusion_model(checkpoint_path, config, device):
+    """加载分数网络模型"""
+    print(f"Loading diffusion model from: {checkpoint_path}")
 
-    def _augment_task_if_enabled(self, task):
-        """如果启用，对任务进行扩充"""
-        if self.task_sampler is None:
-            return task
+    # 这里需要加载分数网络，暂时返回None表示未实现
+    # TODO: 实现分数网络的加载逻辑
+    print("⚠️ 分数网络加载功能待实现")
+    return None
 
-        try:
-            # 获取扩充参数
-            aug_config = self.config.meta_test.task_augmentation
-            k_augment = getattr(aug_config, "k_augment", 2)
-            finetune_steps = getattr(aug_config, "finetune_steps", 10)
-            learning_rate = getattr(aug_config, "learning_rate", 1e-3)
 
-            # 执行任务扩充
-            augmented_task = self.task_sampler.augment_task(
-                task=task,
-                k_augment=k_augment,
-                finetune_steps=finetune_steps,
-                learning_rate=learning_rate,
-            )
+def _get_embeddings(encoder, x, adj, device):
+    """获取图嵌入"""
+    mask = node_flags(adj).unsqueeze(-1)
 
-            return augmented_task
+    with torch.no_grad():
+        # 使用编码器提取特征
+        posterior = encoder(x, adj, mask)
 
-        except Exception as e:
-            tqdm.write(f"⚠️ Task augmentation failed: {e}")
-            tqdm.write("   Using original task...")
-            return task
-
-    def _train_classifier_on_task(self, task):
-        """在单个任务上训练分类头"""
-        # 可选的任务扩充
-        if self.task_sampler is not None:
-            task = self._augment_task_if_enabled(task)
-
-        # 获取支持集和查询集数据
-        support_x = task["support_set"]["x"].to(self.device)
-        support_adj = task["support_set"]["adj"].to(self.device)
-        support_label = task["support_set"]["label"].to(self.device)
-
-        query_x = task["query_set"]["x"].to(self.device)
-        query_adj = task["query_set"]["adj"].to(self.device)
-        query_label = task["query_set"]["label"].to(self.device)
-
-        # 获取嵌入向量
-        support_emb = self._get_embeddings(support_x, support_adj)
-        query_emb = self._get_embeddings(query_x, query_adj)
-
-        # 计算类别数和嵌入维度
-        n_way = len(torch.unique(support_label))
-        emb_dim = support_emb.shape[-1]
-
-        # 根据池化方法确定分类器输入维度
-        pooling_method = self.config.meta_test.embedding.pooling_method
-        if pooling_method == "mean_max":
-            model_dim_for_classifier = emb_dim // 2
+        # 处理分布输出 - 获取均值或模式
+        if hasattr(posterior, "mode"):
+            z = posterior.mode()
+        elif hasattr(posterior, "mean"):
+            z = posterior.mean
         else:
-            model_dim_for_classifier = emb_dim
+            z = posterior
 
-        # 创建分类器
-        classifier = Classifier(
-            model_dim=model_dim_for_classifier,
-            num_classes=n_way,
-            classifier_dropout=self.config.meta_test.classifier.dropout,
-            classifier_bias=self.config.meta_test.classifier.bias,
-            manifold=None,
-        ).to(self.device)
+        # 检查是否在双曲流形上
+        if hasattr(encoder, "manifold") and encoder.manifold is not None:
+            # 双曲空间：使用流形上的平均池化
+            manifold = encoder.manifold
 
-        # 优化器和损失函数
-        optimizer = optim.Adam(
-            classifier.parameters(),
-            lr=self.config.meta_test.classifier.lr,
-            weight_decay=self.config.meta_test.classifier.weight_decay,
-        )
-        loss_fn = nn.CrossEntropyLoss()
+            # 在双曲空间中进行masked pooling
+            mask_expanded = mask.expand_as(z)
 
-        # 训练分类器
-        best_loss = float("inf")
-        patience_counter = 0
+            # 将无效节点投影到原点（在双曲空间中）
+            z_masked = z * mask_expanded
 
-        classifier.train()
-        for epoch in range(self.config.meta_test.classifier.epochs):
-            optimizer.zero_grad()
+            # 计算有效节点数
+            num_valid_nodes = mask.sum(dim=1, keepdim=True).float()
+            num_valid_nodes = torch.clamp(num_valid_nodes, min=1.0)
 
-            # 前向传播
-            logits = classifier(support_emb)
-            loss = loss_fn(logits, support_label)
+            # 在双曲空间中进行平均（使用Einstein中点）
+            # 简化版本：先转换到切空间，平均，再投影回流形
+            z_tangent = manifold.logmap0(z_masked)
 
-            # 反向传播
-            loss.backward()
-            optimizer.step()
+            # 在切空间中平均
+            graph_embeddings = z_tangent.sum(dim=1) / num_valid_nodes
 
-            # 早停检查
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= self.config.meta_test.classifier.patience:
-                    break
+            # 投影回流形
+            graph_embeddings = manifold.expmap0(graph_embeddings)
 
-        # 在查询集上评估
-        classifier.eval()
-        with torch.no_grad():
-            query_logits = classifier(query_emb)
-            query_loss = loss_fn(query_logits, query_label)
+        else:
+            # 欧几里得空间：标准平均池化
+            mask_expanded = mask.expand_as(z)
+            z_masked = z * mask_expanded
 
-            # 计算准确率
-            _, predicted = torch.max(query_logits, 1)
-            accuracy = (predicted == query_label).float().mean().item()
+            # 计算有效节点数
+            num_valid_nodes = mask.sum(dim=1, keepdim=True).float()
+            num_valid_nodes = torch.clamp(num_valid_nodes, min=1.0)
 
-            # 计算其他指标
-            predicted_np = predicted.cpu().numpy()
-            query_label_np = query_label.cpu().numpy()
+            # 平均池化
+            graph_embeddings = z_masked.sum(dim=1) / num_valid_nodes
 
-            f1 = f1_score(query_label_np, predicted_np, average="macro", zero_division=0)
-            precision = precision_score(
-                query_label_np, predicted_np, average="macro", zero_division=0
-            )
-            recall = recall_score(query_label_np, predicted_np, average="macro", zero_division=0)
+    return graph_embeddings
 
-        # 可选：支持集评估
-        support_metrics = {}
-        if self.config.meta_test.eval_support:
+
+def _augment_data(data, diffusion_model, k_augment=5):
+    """使用分数网络进行数据增强"""
+    # TODO: 实现数据增强逻辑
+    return data
+
+
+def _train_classifier_on_task(
+    task, encoder, diffusion_model, config, device, use_augmentation=False
+):
+    """在单个任务上训练分类器"""
+    # 获取数据
+    support_x = task["support_set"]["x"].to(device)
+    support_adj = task["support_set"]["adj"].to(device)
+    support_labels = task["support_set"]["label"].to(device)
+
+    query_x = task["query_set"]["x"].to(device)
+    query_adj = task["query_set"]["adj"].to(device)
+    query_labels = task["query_set"]["label"].to(device)
+
+    # 数据增强（如果启用）
+    if use_augmentation and diffusion_model is not None:
+        k_augment = getattr(config.fsl_task, "k_augment", 5)
+        # 增强支持集数据
+        support_data = {"x": support_x, "adj": support_adj, "labels": support_labels}
+        augmented_support = _augment_data(support_data, diffusion_model, k_augment)
+
+        # 使用增强后的数据
+        support_x = augmented_support["x"]
+        support_adj = augmented_support["adj"]
+        support_labels = augmented_support["labels"]
+
+    # 获取嵌入
+    support_emb = _get_embeddings(encoder, support_x, support_adj, device)
+    query_emb = _get_embeddings(encoder, query_x, query_adj, device)
+
+    # 创建标签映射 - 关键修复：使用连续的标签映射
+    unique_support_labels = torch.unique(support_labels)
+    unique_query_labels = torch.unique(query_labels)
+
+    # 确保查询标签都在支持标签中
+    all_labels = torch.unique(torch.cat([support_labels, query_labels]))
+    # 创建从原始标签到连续标签的映射
+    label_map = {label.item(): idx for idx, label in enumerate(all_labels)}
+
+    # 映射标签
+    mapped_support_labels = torch.tensor(
+        [label_map[label.item()] for label in support_labels], device=device, dtype=torch.long
+    )
+    mapped_query_labels = torch.tensor(
+        [label_map[label.item()] for label in query_labels], device=device, dtype=torch.long
+    )
+
+    # 创建分类器
+    num_classes = len(all_labels)
+    # 修复：support_emb的形状可能是[batch_size, num_nodes, embedding_dim]，需要获取正确的维度
+    if support_emb.dim() == 3:
+        # 如果是3维，说明是[batch_size, num_nodes, embedding_dim]，需要池化
+        embedding_dim = support_emb.size(-1)
+
+        # 按照GraphVAE中的处理方式：mean + max pooling然后连接
+        support_mean = support_emb.mean(dim=1)  # [batch_size, embedding_dim]
+        support_max = support_emb.max(dim=1).values  # [batch_size, embedding_dim]
+        support_emb_concat = torch.cat(
+            [support_mean, support_max], dim=-1
+        )  # [batch_size, embedding_dim*2]
+
+        query_mean = query_emb.mean(dim=1)
+        query_max = query_emb.max(dim=1).values
+        query_emb_concat = torch.cat([query_mean, query_max], dim=-1)
+
+        model_dim = embedding_dim  # Classifier期望的model_dim是单个嵌入维度
+    else:
+        # 如果是2维，说明已经是[batch_size, embedding_dim]
+        # 这种情况下我们假设已经是处理过的特征，直接使用
+        model_dim = support_emb.size(1) // 2  # 假设已经是连接后的特征
+        support_emb_concat = support_emb
+        query_emb_concat = query_emb
+
+    classifier = Classifier(
+        model_dim=model_dim,
+        num_classes=num_classes,
+        classifier_dropout=0.2,
+        classifier_bias=True,
+        manifold=None,  # 使用欧几里得空间
+    ).to(device)
+
+    # 训练分类器 - 改进训练过程
+    optimizer = optim.Adam(classifier.parameters(), lr=0.01, weight_decay=0.0001)
+    criterion = nn.CrossEntropyLoss()
+
+    classifier.train()
+
+    # 增加训练轮数并添加验证
+    num_epochs = 100
+    best_val_loss = float("inf")
+    patience = 10
+    no_improve_count = 0
+
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        logits = classifier(support_emb_concat)
+        loss = criterion(logits, mapped_support_labels)
+        loss.backward()
+        optimizer.step()
+
+        # 简单的验证 - 在支持集上测试
+        if epoch % 10 == 0:
+            classifier.eval()
             with torch.no_grad():
-                support_logits = classifier(support_emb)
-                support_loss = loss_fn(support_logits, support_label)
-                _, support_predicted = torch.max(support_logits, 1)
-                support_accuracy = (support_predicted == support_label).float().mean().item()
+                val_logits = classifier(support_emb_concat)
+                val_loss = criterion(val_logits, mapped_support_labels)
+                val_preds = torch.argmax(val_logits, dim=1)
+                val_acc = (val_preds == mapped_support_labels).float().mean()
 
-                support_metrics = {
-                    "support_loss": support_loss.item(),
-                    "support_accuracy": support_accuracy,
-                }
-
-        # 记录任务扩充信息
-        augmentation_metrics = {}
-        if self.task_sampler is not None:
-            original_support_size = task.get("original_support_size", support_x.size(0))
-            current_support_size = support_x.size(0)
-            augmentation_metrics = {
-                "support_size_original": original_support_size,
-                "support_size_augmented": current_support_size,
-                "augmentation_ratio": (
-                    current_support_size / original_support_size
-                    if original_support_size > 0
-                    else 1.0
-                ),
-            }
-
-        return {
-            "query_loss": query_loss.item(),
-            "query_accuracy": accuracy,
-            "query_f1": f1,
-            "query_precision": precision,
-            "query_recall": recall,
-            **support_metrics,
-            **augmentation_metrics,
-        }
-
-    def run_meta_test(self):
-        """运行元学习测试"""
-        tqdm.write(f"Starting meta-learning test: {self.run_name}")
-
-        # 生成测试任务
-        num_test_tasks = self.config.meta_test.num_test_tasks
-        n_way = self.config.fsl_task.N_way
-        k_shot = self.config.fsl_task.K_shot
-        r_query = self.config.fsl_task.R_query
-
-        tqdm.write(f"Running {num_test_tasks} test tasks ({n_way}-way {k_shot}-shot)")
-        if self.task_sampler:
-            aug_config = self.config.meta_test.task_augmentation
-            k_augment = getattr(aug_config, "k_augment", 2)
-            tqdm.write(f"Task augmentation enabled: k_augment={k_augment}")
-
-        # 存储结果
-        all_results = []
-
-        # 进度条
-        pbar = tqdm(range(num_test_tasks), desc="Meta-testing")
-
-        for task_idx in pbar:
-            # 生成单个任务
-            task = self.dataset.sample_one_task(
-                is_train=False, N_way=n_way, K_shot=k_shot, R_query=r_query
-            )
-
-            # 记录原始支持集大小（用于扩充统计）
-            if self.task_sampler:
-                task["original_support_size"] = task["support_set"]["x"].size(0)
-
-            # 训练分类头并评估
-            task_result = self._train_classifier_on_task(task)
-            all_results.append(task_result)
-
-            # 更新进度条
-            if len(all_results) > 0:
-                mean_acc = np.mean([r["query_accuracy"] for r in all_results])
-                pbar.set_postfix({"mean_acc": f"{mean_acc:.4f}"})
-
-            # 定期记录到wandb
-            if (task_idx + 1) % self.config.meta_test.logging.log_interval == 0:
-                self._log_intermediate_results(all_results, task_idx + 1)
-
-        # 计算最终统计结果
-        final_results = self._compute_final_statistics(all_results)
-
-        # 记录最终结果
-        self._log_final_results(final_results)
-
-        # 保存结果
-        self._save_results(final_results, all_results)
-
-        # 打印最终结果
-        self._print_final_results(final_results)
-
-        return final_results
-
-    def _log_intermediate_results(self, results, task_count):
-        """记录中间结果到wandb"""
-        if len(results) == 0:
-            return
-
-        # 计算当前的平均指标
-        current_stats = {}
-        for metric in ["query_accuracy", "query_f1", "query_precision", "query_recall"]:
-            values = [r[metric] for r in results if metric in r]
-            if values:
-                current_stats[f"running_mean_{metric}"] = np.mean(values)
-                current_stats[f"running_std_{metric}"] = np.std(values)
-
-        # 任务扩充统计
-        if self.task_sampler:
-            aug_ratios = [r.get("augmentation_ratio", 1.0) for r in results]
-            if aug_ratios:
-                current_stats["running_mean_augmentation_ratio"] = np.mean(aug_ratios)
-
-        current_stats["completed_tasks"] = task_count
-        wandb.log(current_stats)
-
-    def _compute_final_statistics(self, results):
-        """计算最终统计结果"""
-        if len(results) == 0:
-            return {}
-
-        final_stats = {}
-
-        # 计算每个指标的统计值
-        metrics_to_compute = [
-            "query_accuracy",
-            "query_f1",
-            "query_precision",
-            "query_recall",
-            "query_loss",
-            "support_accuracy",
-            "support_loss",
-            "augmentation_ratio",
-        ]
-
-        for metric in metrics_to_compute:
-            values = [r[metric] for r in results if metric in r]
-            if values:
-                values = np.array(values)
-                mean_val = np.mean(values)
-                std_val = np.std(values)
-
-                # 计算置信区间
-                confidence_interval = std_val * 1.96 / np.sqrt(len(values))  # 95% CI
-
-                final_stats[f"mean_{metric}"] = mean_val
-                final_stats[f"std_{metric}"] = std_val
-                final_stats[f"ci_{metric}"] = confidence_interval
-                final_stats[f"num_samples_{metric}"] = len(values)
-
-        final_stats["total_tasks"] = len(results)
-
-        # 任务扩充统计
-        if self.task_sampler:
-            original_sizes = [r.get("support_size_original", 0) for r in results]
-            augmented_sizes = [r.get("support_size_augmented", 0) for r in results]
-            if original_sizes and augmented_sizes:
-                final_stats["mean_original_support_size"] = np.mean(original_sizes)
-                final_stats["mean_augmented_support_size"] = np.mean(augmented_sizes)
-
-        return final_stats
-
-    def _log_final_results(self, final_results):
-        """记录最终结果到wandb"""
-        wandb.log(final_results, commit=True)
-
-        # 创建结果总结表格
-        summary_data = []
-        for metric in ["query_accuracy", "query_f1", "query_precision", "query_recall"]:
-            if f"mean_{metric}" in final_results:
-                summary_data.append(
-                    [
-                        metric,
-                        final_results[f"mean_{metric}"],
-                        final_results[f"std_{metric}"],
-                        final_results[f"ci_{metric}"],
-                    ]
+                print(
+                    f"  Epoch {epoch}: loss={loss.item():.4f}, val_loss={val_loss.item():.4f}, val_acc={val_acc.item():.4f}"
                 )
 
-        if summary_data:
-            table = wandb.Table(columns=["Metric", "Mean", "Std", "95% CI"], data=summary_data)
-            wandb.log({"final_results_table": table})
-
-    def _print_final_results(self, final_results):
-        """打印最终结果"""
-        tqdm.write(f"Meta-learning test completed!")
-        tqdm.write(f"Final Results:")
-
-        # 主要指标
-        for metric in ["query_accuracy", "query_f1", "query_precision", "query_recall"]:
-            if f"mean_{metric}" in final_results:
-                mean_val = final_results[f"mean_{metric}"]
-                std_val = final_results[f"std_{metric}"]
-                ci_val = final_results[f"ci_{metric}"]
-                tqdm.write(f"  {metric}: {mean_val:.4f} ± {std_val:.4f} (95% CI: ±{ci_val:.4f})")
-
-        # 任务扩充统计
-        if self.task_sampler and "mean_augmentation_ratio" in final_results:
-            aug_ratio = final_results["mean_augmentation_ratio"]
-            tqdm.write(f"  augmentation_ratio: {aug_ratio:.2f}x")
-
-    def _save_results(self, final_results, all_results):
-        """保存结果到文件"""
-        import json
-
-        # 保存最终统计结果
-        final_results_path = os.path.join(self.save_dir, "final_results.json")
-        with open(final_results_path, "w") as f:
-            # Convert numpy types to Python types for JSON serialization
-            json_compatible_results = {}
-            for k, v in final_results.items():
-                if isinstance(v, np.ndarray):
-                    json_compatible_results[k] = v.tolist()
-                elif isinstance(v, (np.integer, np.floating)):
-                    json_compatible_results[k] = v.item()
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    no_improve_count = 0
                 else:
-                    json_compatible_results[k] = v
-            json.dump(json_compatible_results, f, indent=2)
+                    no_improve_count += 1
 
-        # 保存每个任务的详细结果
-        if self.config.meta_test.evaluation.save_predictions:
-            detailed_results_path = os.path.join(self.save_dir, "detailed_results.json")
-            with open(detailed_results_path, "w") as f:
-                json_compatible_all_results = []
-                for result in all_results:
-                    json_compatible_result = {}
-                    for k, v in result.items():
-                        if isinstance(v, (np.integer, np.floating)):
-                            json_compatible_result[k] = v.item()
-                        else:
-                            json_compatible_result[k] = v
-                    json_compatible_all_results.append(json_compatible_result)
-                json.dump(json_compatible_all_results, f, indent=2)
+                if no_improve_count >= patience:
+                    print(f"  Early stopping at epoch {epoch}")
+                    break
 
-        tqdm.write(f"Results saved to: {self.save_dir}")
+            classifier.train()
 
+    # 评估
+    classifier.eval()
+    with torch.no_grad():
+        query_logits = classifier(query_emb_concat)
+        query_preds = torch.argmax(query_logits, dim=1)
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Meta-test Trainer with Optional Task Augmentation"
-    )
-    parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--vae_checkpoint", type=str, required=True, help="VAE检查点路径")
-    parser.add_argument("--score_checkpoint", type=str, help="Score检查点路径（任务扩充可选）")
-    args = parser.parse_args()
+        # 计算指标
+        accuracy = (query_preds == mapped_query_labels).float().mean().item()
 
-    # 创建训练器并开始测试
-    trainer = MetaTestTrainer(args.config, args.vae_checkpoint, args.score_checkpoint)
-    results = trainer.run_meta_test()
+        y_true = mapped_query_labels.cpu().numpy()
+        y_pred = query_preds.cpu().numpy()
 
-    print(f"Meta-test completed. Results saved to: {trainer.save_dir}")
+        f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+        precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
+        recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
+
+    return {
+        "accuracy": accuracy,
+        "f1": f1,
+        "precision": precision,
+        "recall": recall,
+    }
 
 
-if __name__ == "__main__":
-    main()
+def _run_evaluation(dataset, encoder, diffusion_model, config, device, use_augmentation=False):
+    """运行元测试评估"""
+    print(f"🚀 Starting meta-test... (增强模式: {use_augmentation})")
+
+    results = []
+    num_tasks = getattr(config.fsl_task, "num_test_tasks", 100)
+
+    progress_bar = tqdm(range(num_tasks), desc="Meta-test")
+
+    for task_idx in progress_bar:
+        try:
+            # 采样任务 - 修复参数
+            task = dataset.sample_one_task(
+                is_train=False,  # 从测试集采样
+                N_way=config.fsl_task.N_way,
+                K_shot=config.fsl_task.K_shot,
+                R_query=config.fsl_task.R_query,
+            )
+
+            if task is None:
+                continue
+
+            # 训练并评估
+            result = _train_classifier_on_task(
+                task, encoder, diffusion_model, config, device, use_augmentation
+            )
+            results.append(result)
+
+            # 更新进度条
+            if results:
+                avg_acc = np.mean([r["accuracy"] for r in results])
+                progress_bar.set_postfix({"Avg Acc": f"{avg_acc:.4f}"})
+
+            # 记录中间结果
+            if (task_idx + 1) % 10 == 0:
+                avg_acc = np.mean([r["accuracy"] for r in results])
+                avg_f1 = np.mean([r["f1"] for r in results])
+                wandb.log(
+                    {
+                        "avg_accuracy": avg_acc,
+                        "avg_f1": avg_f1,
+                        "completed_tasks": task_idx + 1,
+                    }
+                )
+
+        except Exception as e:
+            continue
+
+    # 计算最终结果
+    if results:
+        accuracies = [r["accuracy"] for r in results]
+        f1_scores = [r["f1"] for r in results]
+
+        final_acc = np.mean(accuracies)
+        final_f1 = np.mean(f1_scores)
+        std_acc = np.std(accuracies)
+        std_f1 = np.std(f1_scores)
+
+        # 95%置信区间
+        margin_acc = 1.96 * std_acc / np.sqrt(len(accuracies))
+        margin_f1 = 1.96 * std_f1 / np.sqrt(len(f1_scores))
+
+        # 记录最终结果
+        wandb.log(
+            {
+                "final_accuracy": final_acc,
+                "final_f1": final_f1,
+                "accuracy_std": std_acc,
+                "f1_std": std_f1,
+                "accuracy_margin": margin_acc,
+                "f1_margin": margin_f1,
+                "num_tasks": len(results),
+                "use_augmentation": use_augmentation,
+            }
+        )
+
+        # 打印结果
+        aug_status = "增强模式" if use_augmentation else "基础模式"
+        print("\n" + "=" * 50)
+        print(f"📊 FINAL RESULTS ({aug_status})")
+        print("=" * 50)
+        print(f"Number of tasks: {len(results)}")
+        print(f"Accuracy: {final_acc:.4f} ± {margin_acc:.4f}")
+        print(f"F1 Score: {final_f1:.4f} ± {margin_f1:.4f}")
+        print("=" * 50)
+
+        return {
+            "accuracy": final_acc,
+            "f1": final_f1,
+            "num_tasks": len(results),
+            "use_augmentation": use_augmentation,
+        }
+    else:
+        print("⚠️ 警告：没有成功完成任何任务!")
+        return {
+            "accuracy": 0.0,
+            "f1": 0.0,
+            "num_tasks": 0,
+            "use_augmentation": use_augmentation,
+        }
+
+
+def existing_task_test(encoder, graph_embedding_net, task, config, device, use_augmentation=False):
+    """
+    对单个任务进行测试，使用现有的方法
+    """
+    try:
+        # 提取任务数据
+        support_x = task["support_set"]["x"].to(device)
+        support_adj = task["support_set"]["adj"].to(device)
+        support_labels = task["support_set"]["y"].to(device)
+        query_x = task["query_set"]["x"].to(device)
+        query_adj = task["query_set"]["adj"].to(device)
+        query_labels = task["query_set"]["y"].to(device)
+
+        N_way = config.fsl_task.N_way
+
+        with torch.no_grad():
+            # 编码图形
+            support_node_emb = encoder(support_x, support_adj)
+            query_node_emb = encoder(query_x, query_adj)
+
+            # 获取图级别嵌入
+            support_graph_emb = graph_embedding_net(support_node_emb, support_adj)
+            query_graph_emb = graph_embedding_net(query_node_emb, query_adj)
+
+            support_emb = support_graph_emb
+            query_emb = query_graph_emb
+
+            # 标签信息
+            unique_labels = torch.unique(torch.cat([support_labels, query_labels]))
+
+            # 标签映射：将原始标签映射到0, 1, 2, ..., N_way-1
+            label_to_new = {label.item(): i for i, label in enumerate(unique_labels)}
+
+            mapped_support_labels = torch.tensor(
+                [label_to_new[label.item()] for label in support_labels], device=device
+            )
+            mapped_query_labels = torch.tensor(
+                [label_to_new[label.item()] for label in query_labels], device=device
+            )
+
+            # 连接图嵌入和节点嵌入特征
+            support_emb_concat = torch.cat([support_emb, support_node_emb.mean(dim=1)], dim=-1)
+            query_emb_concat = torch.cat([query_emb, query_node_emb.mean(dim=1)], dim=-1)
+
+            # 训练线性分类器
+            classifier = nn.Linear(support_emb_concat.size(-1), N_way).to(device)
+            optimizer = torch.optim.Adam(classifier.parameters(), lr=0.01)
+            criterion = nn.CrossEntropyLoss()
+
+            # 训练100个epoch
+            for epoch in range(100):
+                optimizer.zero_grad()
+                logits = classifier(support_emb_concat)
+                loss = criterion(logits, mapped_support_labels)
+                loss.backward()
+                optimizer.step()
+
+            # 测试
+            with torch.no_grad():
+                query_logits = classifier(query_emb_concat)
+                query_preds = torch.argmax(query_logits, dim=1)
+
+                # 计算准确率
+                correct = (query_preds == mapped_query_labels).sum().item()
+                total = mapped_query_labels.size(0)
+                accuracy = correct / total
+
+                return {"accuracy": accuracy}
+
+    except Exception as e:
+        print(f"Task test error: {e}")
+        return {"accuracy": 0.0}

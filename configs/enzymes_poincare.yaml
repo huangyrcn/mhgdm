@@ -33,6 +33,7 @@ wandb:
   entity: "huangyr_team"
   online: true
   no_wandb: false
+  output_dir: "logs"  # wandb 输出目录
 
 # ==================== VAE配置 ====================
 vae:
@@ -199,7 +200,7 @@ sampler:
   scale_eps_x: 1.0
   snr_A: 0.25
   snr_x: 0.25
-  proto_guide: true
+  proto_guide: false  # 移除 proto 条件控制
   eps: 0.0001
   noise_removal: true
   probability_flow: false

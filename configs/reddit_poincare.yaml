@@ -37,6 +37,7 @@ wandb:
   entity: "huangyr_team"
   online: true
   no_wandb: false
+  output_dir: "logs"  # wandb 输出目录
 
 # ==================== VAE配置 ====================
 vae:

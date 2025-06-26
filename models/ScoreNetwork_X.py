@@ -190,7 +190,7 @@ class ScoreNetworkX_poincare(torch.nn.Module):
             nn.Linear(self.nfeat + 1, self.nfeat), nn.ReLU(), nn.Linear(self.nfeat, 1)
         )
 
-    def forward(self, x, adj, flags, t, labels, protos):
+    def forward(self, x, adj, flags, t):
         # Check and adapt input dimension if necessary
         if x.size(-1) != self.nfeat:
             if x.size(-1) < self.nfeat:
@@ -207,10 +207,8 @@ class ScoreNetworkX_poincare(torch.nn.Module):
         # Note: temb_net input dim is self.nfeat, output dim is self.nfeat
         temb_output = self.temb_net(temb)
 
-        # Ensure temb_output is correctly shaped for broadcasting if needed by exp_after_transp0
-        # Assuming exp_after_transp0 handles broadcasting or expects [B, N, D]
-        # If temb_output is [B, D], it might need repeating: temb_output.unsqueeze(1).repeat(1, x.size(1), 1)
-        # However, let's assume geoopt handles the [B, D] case for v_at_0 in transp0
+        # 扩展temb_output维度以匹配节点维度 [B, D] -> [B, N, D]
+        temb_output = temb_output.unsqueeze(1).expand(-1, x.size(1), -1)
 
         x = exp_after_transp0(x, temb_output, self.manifolds[0])
         if self.manifold is not None:
@@ -230,10 +228,15 @@ class ScoreNetworkX_poincare(torch.nn.Module):
         x = self.manifold.expmap0(x)
         x = self.manifold.logmap(xt, x)
         # 时间缩放，包含conformal factor
-        x = x * self.time_scale(
-            torch.cat(
-                [temb.repeat(1, x.size(1), 1), self.manifold.lambda_x(xt, keepdim=True)], dim=-1
-            )
-        )
+        temb_expanded = temb.unsqueeze(1).expand(-1, x.size(1), -1)  # [B, N, D]
+        lambda_x = self.manifold.lambda_x(xt, keepdim=True)  # 确保正确的形状
+
+        # 确保lambda_x的形状是[B, N, 1]
+        if lambda_x.dim() == 2:  # [B, N] -> [B, N, 1]
+            lambda_x = lambda_x.unsqueeze(-1)
+        elif lambda_x.dim() == 3 and lambda_x.size(-1) != 1:  # [B, N, D] -> [B, N, 1]
+            lambda_x = lambda_x[..., :1]
+
+        x = x * self.time_scale(torch.cat([temb_expanded, lambda_x], dim=-1))
         x = mask_x(x, flags)
         return x

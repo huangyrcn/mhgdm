@@ -1,17 +1,17 @@
 """
-Score训练器 - 简化版本
+Score训练函数 - 简化版本
 支持双曲分数网络训练，集成采样质量监控
 """
 
 import os
 import sys
 import time
-import argparse
 import numpy as np
 import torch
 import torch.optim as optim
 import wandb
 from tqdm import trange, tqdm
+from omegaconf import OmegaConf
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -20,445 +20,615 @@ from utils.config_utils import load_config, save_config
 from utils.data_utils import MyDataset
 from utils.loader import load_seed, load_device, load_batch, load_model
 from utils.manifolds_utils import get_manifold
-from utils.protos_utils import compute_protos_from
+
+# 移除 proto 相关导入
 from utils.sampler import Sampler
 from models.GraphVAE import GraphVAE
 import ml_collections
 
 
-class ScoreTrainer:
-    """Score训练器"""
+def train_score(config, vae_checkpoint_path):
+    """
+    训练Score模型
 
-    def __init__(self, config_path, vae_checkpoint_path):
-        # 加载配置
-        self.config = load_config(config_path)
-        self.vae_checkpoint_path = vae_checkpoint_path
+    Args:
+        config: 配置对象
+        vae_checkpoint_path: VAE检查点路径
 
-        # 设置基本参数
-        self.seed = load_seed(self.config.seed)
-        self.device = load_device(self.config)
-        self.run_name = self.config.run_name
+    Returns:
+        dict: 包含训练结果和检查点路径
+    """
+    # 确保wandb会话干净
+    close_wandb()
 
-        # 初始化wandb
-        self._init_wandb()
+    # 设置基本参数
+    seed = load_seed(config.seed)
+    device = load_device(config)
+    run_name = config.run_name
 
-        # 加载数据集
-        self.dataset = MyDataset(self.config.data, self.config.fsl_task)
-        self.train_loader, self.test_loader = self.dataset.get_loaders()
+    # 初始化wandb
+    _init_wandb(config)
 
-        # 加载预训练编码器
-        self._load_encoder()
+    # 加载数据集
+    dataset = MyDataset(config.data, config.fsl_task)
+    train_loader, test_loader = dataset.get_loaders()
 
-        # 初始化Score模型
-        self._init_score_models()
+    # 加载预训练编码器
+    encoder, manifold = _load_encoder(vae_checkpoint_path, device)
 
-        # 创建保存目录
-        self.save_dir = os.path.join(
-            self.config.paths.save_dir, f"{self.config.exp_name}_score", self.config.timestamp
+    # 初始化Score模型
+    model_x, model_adj, optimizer_x, optimizer_adj, scheduler_x, scheduler_adj = _init_score_models(
+        config, device, manifold
+    )
+
+    # 创建保存目录
+    save_dir = _create_save_dir(config)
+
+    tqdm.write(f"Score训练初始化完成: {run_name}")
+    tqdm.write(f"保存目录: {save_dir}")
+    tqdm.write(f"设备: {device}")
+
+    # 主训练循环
+    best_test_loss = float("inf")
+    best_sample_quality = 0.0
+    best_checkpoint_path = None
+
+    progress_bar = tqdm(
+        range(config.score.train.num_epochs),
+        desc="Training",
+        ncols=100,
+        leave=True,
+        ascii=True,
+    )
+
+    for epoch in progress_bar:
+        # 训练阶段
+        train_losses = _train_epoch(
+            model_x, model_adj, train_loader, optimizer_x, optimizer_adj, config, device
         )
-        os.makedirs(self.save_dir, exist_ok=True)
+        mean_train_x = np.mean(train_losses["x"])
+        mean_train_adj = np.mean(train_losses["adj"])
+        mean_train_total = mean_train_x + mean_train_adj
 
-        tqdm.write(f"Score Trainer initialized: {self.run_name}")
-        tqdm.write(f"Save directory: {self.save_dir}")
-        tqdm.write(f"Device: {self.device}")
+        # 提交训练损失到wandb
+        train_log = {
+            "epoch": epoch,
+            "train_x_loss": mean_train_x,
+            "train_adj_loss": mean_train_adj,
+            "train_total_loss": mean_train_total,
+            "lr_x": optimizer_x.param_groups[0]["lr"],
+            "lr_adj": optimizer_adj.param_groups[0]["lr"],
+        }
+        wandb.log(train_log)
 
-    def _init_wandb(self):
-        """初始化wandb"""
-        mode = (
-            "disabled"
-            if self.config.debug
-            else ("online" if self.config.wandb.online else "offline")
+        # 更新学习率
+        if scheduler_x:
+            scheduler_x.step()
+        if scheduler_adj:
+            scheduler_adj.step()
+
+        # 检查是否需要进行测试
+        should_test = (epoch % config.score.train.test_interval == 0) or (
+            epoch == config.score.train.num_epochs - 1
         )
 
-        wandb.init(
-            project=f"{self.config.wandb.project}_Score",
-            entity=self.config.wandb.entity,
-            name=f"{self.run_name}_score",
-            config=self.config.to_dict(),
-            mode=mode,
-            dir=os.path.join("logs", "wandb"),
-        )
+        if should_test:
+            # 测试阶段
+            test_losses = _test_epoch(model_x, model_adj, test_loader, config, device)
+            mean_test_x = np.mean(test_losses["x"])
+            mean_test_adj = np.mean(test_losses["adj"])
+            total_test_loss = mean_test_x + mean_test_adj
 
-    def _load_encoder(self):
-        """加载预训练编码器"""
-        tqdm.write(f"Loading VAE encoder from: {self.vae_checkpoint_path}")
-        checkpoint = torch.load(
-            self.vae_checkpoint_path, map_location=self.device, weights_only=False
-        )
+            # 采样质量评估
+            sample_quality = _sample_evaluation(model_x, model_adj, save_dir, config, epoch)
 
-        # 重建VAE模型
-        vae_config = checkpoint["model_config"]
+            # 提交测试损失和指标到wandb
+            test_log = {
+                "epoch": epoch,
+                "test_x_loss": mean_test_x,
+                "test_adj_loss": mean_test_adj,
+                "test_total_loss": total_test_loss,
+                "sample_validity": sample_quality,
+            }
+            wandb.log(test_log)
 
-        # 构造GraphVAE期望的配置格式
-        from types import SimpleNamespace
+            # 检查是否需要保存最佳模型
+            is_best_loss = total_test_loss < best_test_loss
+            is_best_sample = sample_quality > best_sample_quality
 
-        model_config = SimpleNamespace()
-        model_config.encoder_config = vae_config["vae"]["encoder"]
-        model_config.decoder_config = vae_config["vae"]["decoder"]
+            if is_best_loss:
+                best_test_loss = total_test_loss
+                checkpoint_path = _save_checkpoint(
+                    model_x,
+                    model_adj,
+                    optimizer_x,
+                    optimizer_adj,
+                    scheduler_x,
+                    scheduler_adj,
+                    epoch,
+                    total_test_loss,
+                    sample_quality,
+                    save_dir,
+                    "best_loss",
+                    config,
+                )
+                tqdm.write(f"✓ New best loss: {total_test_loss:.6f}")
+
+            if is_best_sample:
+                best_sample_quality = sample_quality
+                best_checkpoint_path = _save_checkpoint(
+                    model_x,
+                    model_adj,
+                    optimizer_x,
+                    optimizer_adj,
+                    scheduler_x,
+                    scheduler_adj,
+                    epoch,
+                    total_test_loss,
+                    sample_quality,
+                    save_dir,
+                    "best_sample",
+                    config,
+                )
+                tqdm.write(f"✓ New best sample quality: {sample_quality:.4f}")
+
+            # 更新进度条
+            progress_bar.set_postfix(
+                {
+                    "Train": f"{mean_train_total:.6f}",
+                    "Test": f"{total_test_loss:.6f}",
+                    "Sample": f"{sample_quality:.4f}",
+                    "Best": f"{min(best_test_loss, total_test_loss):.6f}",
+                }
+            )
+
+            tqdm.write(
+                f"Epoch {epoch}: Train X={mean_train_x:.6f}, Adj={mean_train_adj:.6f} | "
+                f"Test X={mean_test_x:.6f}, Adj={mean_test_adj:.6f} | Sample={sample_quality:.4f}"
+            )
+        else:
+            # 只更新进度条显示训练loss
+            progress_bar.set_postfix(
+                {
+                    "Train": f"{mean_train_total:.6f}",
+                    "Test": "N/A",
+                    "Sample": "N/A",
+                    "Best": f"{best_test_loss:.6f}",
+                }
+            )
+
+    # 保存最终模型
+    final_test_losses = _test_epoch(model_x, model_adj, test_loader, config, device)
+    final_mean_test_x = np.mean(final_test_losses["x"])
+    final_mean_test_adj = np.mean(final_test_losses["adj"])
+    final_total_test_loss = final_mean_test_x + final_mean_test_adj
+    final_sample_quality = _sample_evaluation(
+        model_x, model_adj, save_dir, config, config.score.train.num_epochs - 1
+    )
+
+    final_checkpoint_path = _save_checkpoint(
+        model_x,
+        model_adj,
+        optimizer_x,
+        optimizer_adj,
+        scheduler_x,
+        scheduler_adj,
+        config.score.train.num_epochs - 1,
+        final_total_test_loss,
+        final_sample_quality,
+        save_dir,
+        "final",
+        config,
+    )
+
+    tqdm.write(
+        f"Training completed. Best test loss: {best_test_loss:.6f}, Best sample quality: {best_sample_quality:.4f}"
+    )
+
+    # 如果没有最佳采样质量检查点，则使用最终检查点
+    if best_checkpoint_path is None:
+        best_checkpoint_path = final_checkpoint_path
+
+    return {
+        "save_dir": save_dir,
+        "best_checkpoint": best_checkpoint_path,
+        "final_checkpoint": final_checkpoint_path,
+        "best_test_loss": best_test_loss,
+        "best_sample_quality": best_sample_quality,
+    }
+
+
+def _init_wandb(config):
+    """初始化wandb"""
+    mode = "disabled" if config.debug else ("online" if config.wandb.online else "offline")
+
+    # 从配置中获取 wandb 输出目录
+    wandb_output_dir = getattr(config.wandb, "output_dir", "logs")
+    wandb_dir = os.path.join(wandb_output_dir, "wandb")
+
+    wandb.init(
+        project=f"{config.wandb.project}_Score",
+        entity=config.wandb.entity,
+        name=f"{config.run_name}_score",
+        config=OmegaConf.to_container(config, resolve=True),
+        mode=mode,
+        dir=wandb_dir,
+    )
+
+
+def _load_encoder(vae_checkpoint_path, device):
+    """加载预训练编码器"""
+    tqdm.write(f"Loading VAE encoder from: {vae_checkpoint_path}")
+    checkpoint = torch.load(vae_checkpoint_path, map_location=device, weights_only=False)
+
+    # 重建VAE模型
+    vae_config = checkpoint["model_config"]
+
+    # 构造GraphVAE期望的配置格式
+    from types import SimpleNamespace
+
+    model_config = SimpleNamespace()
+
+    # 兼容两种配置格式
+    if "vae" in vae_config:
+        # 旧格式
+        encoder_config = dict(vae_config["vae"]["encoder"])
+        decoder_config = dict(vae_config["vae"]["decoder"])
+
+        if isinstance(encoder_config, dict):
+            encoder_config = SimpleNamespace(**encoder_config)
+        if isinstance(decoder_config, dict):
+            decoder_config = SimpleNamespace(**decoder_config)
+
+        model_config.encoder_config = encoder_config
+        model_config.decoder_config = decoder_config
         model_config.pred_node_class = vae_config["vae"]["loss"]["pred_node_class"]
         model_config.pred_edge = vae_config["vae"]["loss"]["pred_edge"]
         model_config.pred_graph_class = vae_config["vae"]["loss"]["pred_graph_class"]
         model_config.use_kl_loss = vae_config["vae"]["loss"]["use_kl_loss"]
-        model_config.use_base_proto_loss = vae_config["vae"]["loss"]["use_base_proto_loss"]
-        model_config.use_sep_proto_loss = vae_config["vae"]["loss"]["use_sep_proto_loss"]
+        model_config.use_base_proto_loss = False
+        model_config.use_sep_proto_loss = False
         model_config.latent_dim = vae_config["vae"]["encoder"]["latent_feature_dim"]
-        model_config.device = self.device
+    else:
+        # 新格式
+        encoder_config = dict(vae_config["encoder"])
+        decoder_config = dict(vae_config["decoder"])
 
-        self.vae_model = GraphVAE(model_config)
-        self.vae_model.load_state_dict(checkpoint["model_state_dict"])
-        self.vae_model.to(self.device)
-        self.vae_model.eval()
+        if isinstance(encoder_config, dict):
+            encoder_config = SimpleNamespace(**encoder_config)
+        if isinstance(decoder_config, dict):
+            decoder_config = SimpleNamespace(**decoder_config)
 
-        # 提取编码器
-        self.encoder = self.vae_model.encoder
-        self.encoder.requires_grad_(False)
-        self.manifold = self.encoder.manifold
+        model_config.encoder_config = encoder_config
+        model_config.decoder_config = decoder_config
+        model_config.pred_node_class = vae_config["loss"]["pred_node_class"]
+        model_config.pred_edge = vae_config["loss"]["pred_edge"]
+        model_config.pred_graph_class = vae_config["loss"]["pred_graph_class"]
+        model_config.use_kl_loss = vae_config["loss"]["use_kl_loss"]
+        model_config.use_base_proto_loss = False
+        model_config.use_sep_proto_loss = False
 
-        tqdm.write(f"✓ Encoder loaded with manifold: {self.manifold.__class__.__name__}")
+        model_config.latent_dim = vae_config["encoder"]["latent_feature_dim"]
 
-    def _init_score_models(self):
-        """初始化Score模型"""
-        # 准备X网络配置
-        x_config = dict(self.config.score.x.to_dict())
-        x_config.update(
-            {
-                "max_feat_num": self.config.data.max_feat_num,
-                "latent_feature_dim": self.config.data.max_feat_num,
-                "manifold": self.manifold,
-            }
+    model_config.device = device
+
+    vae_model = GraphVAE(model_config)
+    vae_model.load_state_dict(checkpoint["model_state_dict"])
+    vae_model.to(device)
+    vae_model.eval()
+
+    # 提取编码器
+    encoder = vae_model.encoder
+    encoder.requires_grad_(False)
+    manifold = encoder.manifold
+
+    tqdm.write(f"✓ Encoder loaded with manifold: {manifold.__class__.__name__}")
+    return encoder, manifold
+
+
+def _create_save_dir(config):
+    """创建保存目录"""
+    if hasattr(config.paths, "score_save_dir"):
+        save_dir = config.paths.score_save_dir
+    else:
+        save_dir = os.path.join(config.paths.save_dir, f"{config.exp_name}_score", config.timestamp)
+
+    os.makedirs(save_dir, exist_ok=True)
+    return save_dir
+
+
+def _init_score_models(config, device, manifold):
+    """初始化Score模型"""
+    # 准备X网络配置
+    # 安全地转换配置为字典
+    x_config = dict(OmegaConf.to_container(config.score.x, resolve=True))
+
+    x_config.update(
+        {
+            "max_feat_num": config.data.max_feat_num,
+            "latent_feature_dim": config.data.max_feat_num,
+            "manifold": manifold,
+            "input_feature_dim": config.data.max_feat_num,
+            "hidden_dim": x_config.get("nhid", 16),
+        }
+    )
+
+    # 准备Adj网络配置
+    # 安全地转换配置为字典
+    adj_config = dict(OmegaConf.to_container(config.score.adj, resolve=True))
+
+    adj_config.update(
+        {
+            "max_feat_num": config.data.max_feat_num,
+            "max_node_num": config.data.max_node_num,
+            "latent_feature_dim": config.data.max_feat_num,
+            "manifold": manifold,
+            "input_feature_dim": config.data.max_feat_num,
+            "hidden_dim": adj_config.get("nhid", 16),
+        }
+    )
+
+    # 创建模型
+    model_x = load_model(x_config, device)
+    model_adj = load_model(adj_config, device)
+
+    # 创建优化器
+    optimizer_x = optim.Adam(
+        model_x.parameters(),
+        lr=config.score.train.lr,
+        weight_decay=config.score.train.weight_decay,
+    )
+    optimizer_adj = optim.Adam(
+        model_adj.parameters(),
+        lr=config.score.train.lr,
+        weight_decay=config.score.train.weight_decay,
+    )
+
+    # 创建学习率调度器
+    scheduler_x = None
+    scheduler_adj = None
+    if config.score.train.lr_schedule:
+        scheduler_x = optim.lr_scheduler.ExponentialLR(
+            optimizer_x, gamma=config.score.train.lr_decay
+        )
+        scheduler_adj = optim.lr_scheduler.ExponentialLR(
+            optimizer_adj, gamma=config.score.train.lr_decay
         )
 
-        # 准备Adj网络配置
-        adj_config = dict(self.config.score.adj.to_dict())
-        adj_config.update(
-            {
-                "max_feat_num": self.config.data.max_feat_num,
-                "max_node_num": self.config.data.max_node_num,
-                "latent_feature_dim": self.config.data.max_feat_num,
-                "manifold": self.manifold,
-            }
-        )
+    tqdm.write(f"✓ Score models initialized")
+    tqdm.write(f"  X model parameters: {sum(p.numel() for p in model_x.parameters()):,}")
+    tqdm.write(f"  Adj model parameters: {sum(p.numel() for p in model_adj.parameters()):,}")
 
-        # 创建模型
-        self.model_x = load_model(x_config, self.device)
-        self.model_adj = load_model(adj_config, self.device)
+    return model_x, model_adj, optimizer_x, optimizer_adj, scheduler_x, scheduler_adj
 
-        # 创建优化器
-        self.optimizer_x = optim.Adam(
-            self.model_x.parameters(),
-            lr=self.config.score.train.lr,
-            weight_decay=self.config.score.train.weight_decay,
-        )
-        self.optimizer_adj = optim.Adam(
-            self.model_adj.parameters(),
-            lr=self.config.score.train.lr,
-            weight_decay=self.config.score.train.weight_decay,
-        )
 
-        # 创建学习率调度器
-        if self.config.score.train.lr_schedule:
-            self.scheduler_x = optim.lr_scheduler.ExponentialLR(
-                self.optimizer_x, gamma=self.config.score.train.lr_decay
-            )
-            self.scheduler_adj = optim.lr_scheduler.ExponentialLR(
-                self.optimizer_adj, gamma=self.config.score.train.lr_decay
-            )
-        else:
-            self.scheduler_x = None
-            self.scheduler_adj = None
+def _train_epoch(model_x, model_adj, train_loader, optimizer_x, optimizer_adj, config, device):
+    """训练一个epoch"""
+    model_x.train()
+    model_adj.train()
+    losses = {"x": [], "adj": []}
 
-        # 计算原型
-        self.protos_train = compute_protos_from(self.encoder, self.train_loader, self.device)
-        self.protos_test = compute_protos_from(self.encoder, self.test_loader, self.device)
+    for batch in train_loader:
+        x, adj, labels = load_batch(batch, device)
 
-        tqdm.write(f"✓ Score models initialized")
-        tqdm.write(f"  X model parameters: {sum(p.numel() for p in self.model_x.parameters()):,}")
-        tqdm.write(
-            f"  Adj model parameters: {sum(p.numel() for p in self.model_adj.parameters()):,}"
-        )
+        # 计算损失
+        loss_x = _compute_score_loss_x(model_x, x, adj, labels, device)
+        loss_adj = _compute_score_loss_adj(model_adj, x, adj, labels, device)
 
-    def _sample_evaluation(self, epoch):
-        """采样质量评估"""
-        # 创建采样器配置
-        sampler_config = self.config.sampler.to_dict()
-        sampler_config.update(
-            {
-                "ckp_path": os.path.join(self.save_dir, "current.pth"),
-                "k_augment": 10,  # 采样数量
-            }
-        )
+        # X网络更新
+        optimizer_x.zero_grad()
+        loss_x.backward()
+        torch.nn.utils.clip_grad_norm_(model_x.parameters(), config.score.train.grad_norm)
+        optimizer_x.step()
 
-        # 保存当前模型用于采样
-        self._save_current_checkpoint(epoch)
+        # Adj网络更新
+        optimizer_adj.zero_grad()
+        loss_adj.backward()
+        torch.nn.utils.clip_grad_norm_(model_adj.parameters(), config.score.train.grad_norm)
+        optimizer_adj.step()
 
-        # 创建采样器
-        temp_config = self.config.to_dict()
-        temp_config["sampler"] = sampler_config
-        temp_config = load_config(temp_config)
+        # 记录损失
+        losses["x"].append(loss_x.item())
+        losses["adj"].append(loss_adj.item())
 
-        try:
-            sampler = Sampler(temp_config)
-            # 执行采样
-            sample_results = sampler.sample(independent=False)
-            return sample_results.get("validity", 0.0)
-        except Exception as e:
-            tqdm.write(f"Error in sampling evaluation: {e}")
-            return 0.0
+    return losses
 
-    def train(self):
-        """主训练循环"""
-        tqdm.write(f"Starting Score training: {self.run_name}")
 
-        best_test_loss = float("inf")
-        best_sample_quality = 0.0
+def _test_epoch(model_x, model_adj, test_loader, config, device):
+    """测试一个epoch"""
+    model_x.eval()
+    model_adj.eval()
+    losses = {"x": [], "adj": []}
 
-        progress_bar = tqdm(
-            range(self.config.score.train.num_epochs),
-            desc="Training",
-            ncols=100,
-            leave=True,
-            ascii=True,
-        )
+    with torch.no_grad():
+        for batch in test_loader:
+            x, adj, labels = load_batch(batch, device)
 
-        for epoch in progress_bar:
-            # 训练阶段 - 每个epoch后都提交训练loss
-            train_losses = self._train_epoch()
-            mean_train_x = np.mean(train_losses["x"])
-            mean_train_adj = np.mean(train_losses["adj"])
-            mean_train_total = mean_train_x + mean_train_adj
-
-            # 提交训练损失到wandb
-            train_log = {
-                "epoch": epoch,
-                "train_x_loss": mean_train_x,
-                "train_adj_loss": mean_train_adj,
-                "train_total_loss": mean_train_total,
-                "lr_x": self.optimizer_x.param_groups[0]["lr"],
-                "lr_adj": self.optimizer_adj.param_groups[0]["lr"],
-            }
-            wandb.log(train_log)
-
-            # 更新学习率
-            if self.scheduler_x:
-                self.scheduler_x.step()
-            if self.scheduler_adj:
-                self.scheduler_adj.step()
-
-            # 检查是否需要进行测试
-            should_test = (epoch % self.config.score.train.test_interval == 0) or (
-                epoch == self.config.score.train.num_epochs - 1
-            )
-
-            if should_test:
-                # 测试阶段
-                test_losses = self._test_epoch()
-                mean_test_x = np.mean(test_losses["x"])
-                mean_test_adj = np.mean(test_losses["adj"])
-                total_test_loss = mean_test_x + mean_test_adj
-
-                # 采样质量评估
-                sample_quality = self._sample_evaluation(epoch)
-
-                # 提交测试损失和指标到wandb
-                test_log = {
-                    "epoch": epoch,
-                    "test_x_loss": mean_test_x,
-                    "test_adj_loss": mean_test_adj,
-                    "test_total_loss": total_test_loss,
-                    "sample_validity": sample_quality,
-                }
-                wandb.log(test_log)
-
-                # 检查是否需要保存最佳模型
-                is_best_loss = total_test_loss < best_test_loss
-                is_best_sample = sample_quality > best_sample_quality
-
-                if is_best_loss:
-                    best_test_loss = total_test_loss
-                    self._save_checkpoint(epoch, total_test_loss, sample_quality, "best_loss")
-                    tqdm.write(f"✓ New best loss: {total_test_loss:.6f}")
-
-                if is_best_sample:
-                    best_sample_quality = sample_quality
-                    self._save_checkpoint(epoch, total_test_loss, sample_quality, "best_sample")
-                    tqdm.write(f"✓ New best sample quality: {sample_quality:.4f}")
-
-                # 更新进度条
-                progress_bar.set_postfix(
-                    {
-                        "Train": f"{mean_train_total:.6f}",
-                        "Test": f"{total_test_loss:.6f}",
-                        "Sample": f"{sample_quality:.4f}",
-                        "Best": f"{min(best_test_loss, total_test_loss):.6f}",
-                    }
-                )
-
-                tqdm.write(
-                    f"Epoch {epoch}: Train X={mean_train_x:.6f}, Adj={mean_train_adj:.6f} | "
-                    f"Test X={mean_test_x:.6f}, Adj={mean_test_adj:.6f} | Sample={sample_quality:.4f}"
-                )
-            else:
-                # 只更新进度条显示训练loss
-                progress_bar.set_postfix(
-                    {
-                        "Train": f"{mean_train_total:.6f}",
-                        "Test": "N/A",
-                        "Sample": "N/A",
-                        "Best": f"{best_test_loss:.6f}",
-                    }
-                )
-
-        # 保存最终模型
-        final_test_losses = self._test_epoch()
-        final_mean_test_x = np.mean(final_test_losses["x"])
-        final_mean_test_adj = np.mean(final_test_losses["adj"])
-        final_total_test_loss = final_mean_test_x + final_mean_test_adj
-        final_sample_quality = self._sample_evaluation(self.config.score.train.num_epochs - 1)
-
-        self._save_checkpoint(
-            self.config.score.train.num_epochs - 1,
-            final_total_test_loss,
-            final_sample_quality,
-            "final",
-        )
-
-        tqdm.write(
-            f"Training completed. Best test loss: {best_test_loss:.6f}, Best sample quality: {best_sample_quality:.4f}"
-        )
-        return self.save_dir
-
-    def _train_epoch(self):
-        """训练一个epoch"""
-        self.model_x.train()
-        self.model_adj.train()
-        losses = {"x": [], "adj": []}
-
-        for batch in self.train_loader:
-            x, adj, labels = load_batch(batch, self.device)
-
-            # 计算损失（这里需要实现具体的score matching损失）
-            loss_x = self._compute_score_loss_x(x, adj, labels)
-            loss_adj = self._compute_score_loss_adj(x, adj, labels)
-
-            # X网络更新
-            self.optimizer_x.zero_grad()
-            loss_x.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.model_x.parameters(), self.config.score.train.grad_norm
-            )
-            self.optimizer_x.step()
-
-            # Adj网络更新
-            self.optimizer_adj.zero_grad()
-            loss_adj.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.model_adj.parameters(), self.config.score.train.grad_norm
-            )
-            self.optimizer_adj.step()
+            # 计算损失
+            loss_x = _compute_score_loss_x(model_x, x, adj, labels, device)
+            loss_adj = _compute_score_loss_adj(model_adj, x, adj, labels, device)
 
             # 记录损失
             losses["x"].append(loss_x.item())
             losses["adj"].append(loss_adj.item())
 
-        return losses
-
-    def _test_epoch(self):
-        """测试一个epoch"""
-        self.model_x.eval()
-        self.model_adj.eval()
-        losses = {"x": [], "adj": []}
-
-        with torch.no_grad():
-            for batch in self.test_loader:
-                x, adj, labels = load_batch(batch, self.device)
-
-                # 计算损失
-                loss_x = self._compute_score_loss_x(x, adj, labels)
-                loss_adj = self._compute_score_loss_adj(x, adj, labels)
-
-                # 记录损失
-                losses["x"].append(loss_x.item())
-                losses["adj"].append(loss_adj.item())
-
-        return losses
-
-    def _compute_score_loss_x(self, x, adj, labels):
-        """计算X网络的score matching损失"""
-        # 这里是简化版本，实际需要实现完整的score matching损失
-        # 添加噪声
-        noise = torch.randn_like(x) * 0.1
-        x_noisy = x + noise
-
-        # 计算分数
-        score = self.model_x(x_noisy, adj)
-
-        # 简化的损失计算
-        loss = torch.mean((score + noise / 0.01) ** 2)
-        return loss
-
-    def _compute_score_loss_adj(self, x, adj, labels):
-        """计算Adj网络的score matching损失"""
-        # 这里是简化版本，实际需要实现完整的score matching损失
-        # 添加噪声
-        noise = torch.randn_like(adj) * 0.1
-        adj_noisy = adj + noise
-
-        # 计算分数
-        score = self.model_adj(x, adj_noisy)
-
-        # 简化的损失计算
-        loss = torch.mean((score + noise / 0.01) ** 2)
-        return loss
-
-    def _save_current_checkpoint(self, epoch):
-        """保存当前检查点用于采样"""
-        checkpoint = {
-            "epoch": epoch,
-            "model_config": self.config.to_dict(),
-            "params_x": self.config.score.x.to_dict(),
-            "params_adj": self.config.score.adj.to_dict(),
-            "x_state_dict": self.model_x.state_dict(),
-            "adj_state_dict": self.model_adj.state_dict(),
-        }
-        torch.save(checkpoint, os.path.join(self.save_dir, "current.pth"))
-
-    def _save_checkpoint(self, epoch, test_loss, sample_quality, checkpoint_type):
-        """保存检查点"""
-        checkpoint = {
-            "epoch": epoch,
-            "model_config": self.config.to_dict(),
-            "params_x": self.config.score.x.to_dict(),
-            "params_adj": self.config.score.adj.to_dict(),
-            "x_state_dict": self.model_x.state_dict(),
-            "adj_state_dict": self.model_adj.state_dict(),
-            "optimizer_x_state_dict": self.optimizer_x.state_dict(),
-            "optimizer_adj_state_dict": self.optimizer_adj.state_dict(),
-            "test_loss": test_loss,
-            "sample_quality": sample_quality,
-        }
-
-        if self.scheduler_x:
-            checkpoint["scheduler_x_state_dict"] = self.scheduler_x.state_dict()
-        if self.scheduler_adj:
-            checkpoint["scheduler_adj_state_dict"] = self.scheduler_adj.state_dict()
-
-        # 保存指定类型的检查点
-        checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_type}.pth")
-        torch.save(checkpoint, checkpoint_path)
+    return losses
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Score Trainer")
-    parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--vae_checkpoint", type=str, required=True, help="VAE检查点路径")
-    args = parser.parse_args()
+def _compute_score_loss_x(model, x, adj, labels, device):
+    """计算X网络的score matching损失"""
+    from utils.graph_utils import node_flags
 
-    # 创建训练器并开始训练
-    trainer = ScoreTrainer(args.config, args.vae_checkpoint)
-    save_dir = trainer.train()
+    # 添加噪声
+    noise = torch.randn_like(x) * 0.1
+    x_noisy = x + noise
 
-    tqdm.write(f"Score training completed. Models saved to: {save_dir}")
+    # 生成flags
+    flags = node_flags(adj)
+
+    # 生成时间步
+    batch_size = x.shape[0]
+    t = torch.randint(0, 100, (batch_size,), device=device).float()
+
+    # 计算分数
+    score = model(x_noisy, adj, flags, t)
+
+    # 简化的损失计算
+    loss = torch.mean((score + noise / 0.01) ** 2)
+    return loss
 
 
-if __name__ == "__main__":
-    main()
+def _compute_score_loss_adj(model, x, adj, labels, device):
+    """计算Adj网络的score matching损失"""
+    from utils.graph_utils import node_flags
+
+    # 添加噪声
+    noise = torch.randn_like(adj) * 0.1
+    adj_noisy = adj + noise
+
+    # 生成flags
+    flags = node_flags(adj)
+
+    # 生成时间步
+    batch_size = x.shape[0]
+    t = torch.randint(0, 100, (batch_size,), device=device).float()
+
+    # 计算分数
+    score = model(x, adj_noisy, flags, t)
+
+    # 简化的损失计算
+    loss = torch.mean((score + noise / 0.01) ** 2)
+    return loss
+
+
+def _sample_evaluation(model_x, model_adj, save_dir, config, epoch):
+    """采样质量评估"""
+    # 保存当前模型用于采样
+    _save_current_checkpoint(model_x, model_adj, save_dir, config, epoch)
+
+    # 创建采样器配置 - 简化版本
+    try:
+        # 创建一个简化的配置对象用于采样
+        from types import SimpleNamespace
+
+        # 基础采样配置
+        sampling_config = SimpleNamespace()
+
+        # 复制主要配置
+        sampling_config.data = config.data
+        sampling_config.seed = getattr(config, "seed", 42)
+        sampling_config.device = getattr(config, "device", "auto")
+
+        # SDE配置
+        sampling_config.sde = config.score.sde
+
+        # 采样器配置
+        sampling_config.sampler = SimpleNamespace()
+        sampling_config.sampler.ckp_path = os.path.join(save_dir, "current.pth")
+        sampling_config.sampler.k_augment = 5  # 减少采样数量以加快速度
+        sampling_config.sampler.corrector = "Langevin"
+        sampling_config.sampler.n_steps = 1
+        sampling_config.sampler.predictor = "Euler"
+        sampling_config.sampler.scale_eps_A = 1.0
+        sampling_config.sampler.scale_eps_x = 1.0
+        sampling_config.sampler.snr_A = 0.25
+        sampling_config.sampler.snr_x = 0.25
+
+        # 采样参数
+        sampling_config.sample = SimpleNamespace()
+        sampling_config.sample.eps = 0.001
+        sampling_config.sample.noise_removal = True
+        sampling_config.sample.probability_flow = False
+        sampling_config.sample.use_ema = True
+
+        # 如果存在fsl_task配置，也复制过来
+        if hasattr(config, "fsl_task"):
+            sampling_config.fsl_task = config.fsl_task
+
+        # 尝试进行采样
+        sampler = Sampler(sampling_config)
+        sample_results = sampler.sample(independent=False)
+
+        # 提取有效性指标
+        validity = sample_results.get("validity", 0.0)
+        if isinstance(validity, (list, tuple)):
+            validity = float(validity[0]) if len(validity) > 0 else 0.0
+        elif not isinstance(validity, (int, float)):
+            validity = 0.0
+
+        return float(validity)
+
+    except Exception as e:
+        tqdm.write(f"Sampling evaluation failed: {e}")
+        # 不是致命错误，返回0继续训练
+        return 0.0
+
+
+def _save_current_checkpoint(model_x, model_adj, save_dir, config, epoch):
+    """保存当前检查点用于采样"""
+    # 安全地处理配置转换
+    model_config = OmegaConf.to_container(config, resolve=True)
+    params_x = OmegaConf.to_container(config.score.x, resolve=True)
+    params_adj = OmegaConf.to_container(config.score.adj, resolve=True)
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_config": model_config,
+        "params_x": params_x,
+        "params_adj": params_adj,
+        "x_state_dict": model_x.state_dict(),
+        "adj_state_dict": model_adj.state_dict(),
+    }
+    torch.save(checkpoint, os.path.join(save_dir, "current.pth"))
+
+
+def _save_checkpoint(
+    model_x,
+    model_adj,
+    optimizer_x,
+    optimizer_adj,
+    scheduler_x,
+    scheduler_adj,
+    epoch,
+    test_loss,
+    sample_quality,
+    save_dir,
+    checkpoint_type,
+    config,
+):
+    """保存检查点"""
+    # 安全地处理配置转换
+    model_config = OmegaConf.to_container(config, resolve=True)
+    params_x = OmegaConf.to_container(config.score.x, resolve=True)
+    params_adj = OmegaConf.to_container(config.score.adj, resolve=True)
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_config": model_config,
+        "params_x": params_x,
+        "params_adj": params_adj,
+        "x_state_dict": model_x.state_dict(),
+        "adj_state_dict": model_adj.state_dict(),
+        "optimizer_x_state_dict": optimizer_x.state_dict(),
+        "optimizer_adj_state_dict": optimizer_adj.state_dict(),
+        "test_loss": test_loss,
+        "sample_quality": sample_quality,
+    }
+
+    if scheduler_x is not None:
+        checkpoint["scheduler_x_state_dict"] = scheduler_x.state_dict()
+    if scheduler_adj is not None:
+        checkpoint["scheduler_adj_state_dict"] = scheduler_adj.state_dict()
+
+    save_path = os.path.join(save_dir, f"{checkpoint_type}.pth")
+    torch.save(checkpoint, save_path)
+    return save_path
+
+
+def close_wandb():
+    """确保wandb会话正确关闭"""
+    try:
+        if wandb.run is not None:
+            wandb.finish()
+    except:
+        pass
