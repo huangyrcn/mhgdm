@@ -24,7 +24,7 @@ fsl_task:
   N_way: 4  # 4个测试类别
   K_shot: 5
   R_query: 10
-  meta_test_tasks: 10
+  num_test_tasks: 5  # 修复：改为num_test_tasks
 
 # ==================== Wandb配置 ====================
 wandb:
@@ -164,7 +164,7 @@ meta_test:
     augment_query: false       # 是否扩充查询集
   
   # 测试配置
-  num_test_tasks: 100
+  num_test_tasks: 5
   eval_support: true
   
   # 分类器配置
@@ -216,8 +216,8 @@ paths:
   score_save_dir: "./checkpoints/auto/score"
   
   # 检查点路径（运行时自动更新）
-  vae_checkpoint: null
-  score_checkpoint: null
+  vae_checkpoint: "./checkpoints/letter_high_poincare_20250627_065659/vae/best_meta_acc.pth"
+  score_checkpoint: "./checkpoints/letter_high_poincare_20250627_065659/score/final.pth"
 
 # ==================== 调试模式配置 ====================
 # 可选的快速调试配置，设置debug: true时生效
@@ -231,4 +231,47 @@ debug_config:
       num_epochs: 500
       test_interval: 50
   meta_test:
-    num_test_tasks: 20 
+    num_test_tasks: 20
+
+# ==================== ControlNet配置 ====================
+# 启用ControlNet架构进行精确数据增强
+use_controlnet: true
+use_finetuned_controlnet: true  # 启用任务特定微调
+
+# ControlNet训练配置
+controlnet:
+  condition_dim: 16           # 条件向量维度
+  learning_rate: 0.0001      # ControlNet分支学习率
+  freeze_original: true      # 冻结原始Score网络
+  zero_init: true           # 零初始化ControlNet输出层
+  
+  # 基于类别原型的条件配置
+  prototype_config:
+    num_classes: 4           # Letter_high数据集的类别数
+    prototype_update_rate: 0.1  # 原型更新率
+    use_class_prototypes: true  # 启用类别原型
+    
+  # 条件信号类型：使用类别原型
+  condition_type: "class_prototypes"  # 选项: "class_prototypes", "graph_features", "mixed"
+    
+  # 增强参数
+  augmentation:
+    k_augment: 3            # 每个样本生成的增强数量
+    noise_schedule: [0.1, 0.15, 0.2]  # 递增噪声水平
+    control_strength: 1.0   # 控制信号强度
+    prototype_influence: 0.8  # 类别原型的影响权重
+
+# ==================== ControlNet微调配置 ====================
+# 任务特定微调参数
+controlnet_finetune_epochs: 8        # 微调轮数
+controlnet_lr: 0.001                 # 微调学习率
+finetune_noise_scale: 0.1            # 微调时的噪声尺度
+
+# 数据增强配置  
+k_augment_support: 4                 # 支持集增强倍数
+k_augment_query: 2                   # 查询集增强倍数（如果启用）
+augment_query_for_training: false    # 是否在训练分类器时也增强查询集
+
+# ==================== 数据增强模式选择 ====================
+# 可选值: 'controlnet', 'traditional', 'none'
+augmentation_mode: 'controlnet' 

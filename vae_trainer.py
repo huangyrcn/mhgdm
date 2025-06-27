@@ -251,19 +251,19 @@ def train_vae(config):
             # 更新进度条
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_loss:.6f}",
+                    "Train": f"{mean_train_loss:.4f}",
                     "Best-Meta": f"{best_meta_test_acc:.4f}",
                 }
             )
 
             tqdm.write(
-                f"Epoch {epoch}: Train={mean_train_loss:.6f}, Test={mean_test_loss:.6f}, Meta-Test Acc={meta_test_acc:.4f}"
+                f"Epoch {epoch}: Train={mean_train_loss:.4f}, Test={mean_test_loss:.4f}, Meta-Test Acc={meta_test_acc:.4f}"
             )
         else:
             # 非测试epoch
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_loss:.6f}",
+                    "Train": f"{mean_train_loss:.4f}",
                     "Best-Meta": f"{best_meta_test_acc:.4f}",
                 }
             )
@@ -290,7 +290,7 @@ def train_vae(config):
     )
 
     tqdm.write(
-        f"Training completed. Best test loss: {best_test_loss:.6f}, Best meta-test acc: {best_meta_test_acc:.4f}"
+        f"Training completed. Best test loss: {best_test_loss:.4f}, Best meta-test acc: {best_meta_test_acc:.4f}"
     )
 
     # 如果没有最佳meta准确率检查点，则使用最终检查点

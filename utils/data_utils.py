@@ -374,40 +374,6 @@ class MyDatasetOptimized:
             class_id = graph_data.get_label("test_split")
             self.test_indices_by_class[class_id].append(idx)
 
-        # 调试信息：打印FSL索引构建结果
-        print(f"FSL索引构建结果:")
-        print(f"  训练集类别分布: {dict(self.train_indices_by_class)}")
-        print(f"  测试集类别分布: {dict(self.test_indices_by_class)}")
-
-        # 更详细的调试：检查测试图的标签
-        if len(self.test_graphs) > 0:
-            print(f"  测试图详细信息（前5个）:")
-            for i, graph_data in enumerate(self.test_graphs[:5]):
-                print(
-                    f"    Graph {i}: original_label={graph_data.get_label('original')}, test_split_label={graph_data.get_label('test_split')}"
-                )
-        else:
-            print(f"  ⚠️ 警告：没有测试图!")
-
-        # 检查测试类别与实际分配的匹配
-        assigned_test_classes = set(self.test_indices_by_class.keys())
-        # 修复：期望的测试类别应该是重映射后的标签（0,1,2,3），而不是原始标签
-        expected_test_classes = set(range(len(self.test_classes)))  # {0, 1, 2, 3}
-        print(f"  期望测试类别: {expected_test_classes} (重映射后)")
-        print(f"  实际分配类别: {assigned_test_classes}")
-        print(f"  原始测试类别: {self.test_classes}")
-
-        if assigned_test_classes != expected_test_classes:
-            print(f"  ⚠️ 类别分配不匹配!")
-            missing_classes = expected_test_classes - assigned_test_classes
-            unexpected_classes = assigned_test_classes - expected_test_classes
-            if missing_classes:
-                print(f"     缺失类别: {missing_classes}")
-            if unexpected_classes:
-                print(f"     意外类别: {unexpected_classes}")
-        else:
-            print(f"  ✅ 类别分配正确!")
-
     def get_loaders(self):
         """返回训练和测试数据加载器"""
         batch_size = getattr(self.config, "batch_size", 64)

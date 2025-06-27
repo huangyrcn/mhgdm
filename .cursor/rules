@@ -93,3 +93,140 @@ To test new datasets or configurations:
 - `configs/model/`: Model architecture configs  
 - `configs/train/`: Training hyperparameters
 - `configs/fsl_task/`: Few-shot learning task definitions
+
+# MHGDM项目架构和开发指南
+
+## 项目概述
+多阶段双曲图生成模型项目，采用三阶段训练架构：VAE预训练 → Score网络训练 → 元学习测试
+
+## 三阶段训练架构
+
+### Stage 1: VAE预训练
+**训练器**: [vae_trainer.py](mdc:vae_trainer.py) - `VAETrainer`类  
+**目标**: 训练双曲图变分自编码器，学习图的潜在表示
+- 支持双曲流形（PoincareBall, Lorentz）和欧几里得空间
+- 集成元测试监控和早停机制
+- 配置路径: `configs/vae/` 目录
+- 输出：编码器检查点 (包含`encoder_state_dict`)
+
+### Stage 2: Score网络训练  
+**训练器**: [score_trainer.py](mdc:score_trainer.py) - `ScoreTrainer`类  
+**目标**: 训练扩散模型的分数网络，学习图生成过程
+- 加载预训练VAE编码器（冻结）
+- 训练X网络（节点特征）和Adj网络（邻接矩阵）的分数函数
+- 集成采样质量评估 ([utils/sampler.py](mdc:utils/sampler.py))
+- 配置路径: `configs/score/` 目录  
+- 输出：分数网络检查点 (包含`x_state_dict`, `adj_state_dict`)
+
+### Stage 3: 元学习测试
+**测试器**: [meta_test.py](mdc:meta_test.py) - `MetaTestTrainer`类  
+**目标**: 少样本学习评估，验证学到的表示质量
+- 加载VAE编码器提取图特征
+- 简单分类器快速适应新任务  
+- 支持N-way K-shot评估协议
+- 配置：硬编码参数保持简洁
+
+### 统一执行
+**主入口**: [run_three_stage.py](mdc:run_three_stage.py)  
+按顺序执行三阶段训练，自动管理检查点路径传递。
+
+## 代码架构模式
+
+### 训练器基类模式
+所有训练器遵循统一的初始化模式：
+```python
+class Trainer:
+    def __init__(self, config_path, *checkpoints):
+        # 1. 配置加载
+        self.config = load_config(config_path)
+        
+        # 2. 基础设置  
+        self.device = load_device(self.config)
+        load_seed(self.config.seed)
+        
+        # 3. wandb初始化
+        self._init_wandb()
+        
+        # 4. 数据加载
+        self.dataset = MyDataset(...)
+        
+        # 5. 模型初始化
+        self._init_model()
+```
+
+### 命名约定
+- **私有方法**: `_` 前缀 (如 `_init_wandb()`, `_load_encoder()`)
+- **检查点类型**: `best`, `final`, `current`
+- **配置对象**: 使用 `SimpleNamespace` 传递
+- **日志输出**: 优先使用 `tqdm.write()`, 其次 `print()`
+
+### 错误处理模式
+- **降级策略**: 复杂功能失败时回退到简单版本
+- **详细警告**: 失败时输出清晰的错误信息
+- **Try-catch包装**: 所有可能失败的操作都有异常处理
+
+## 核心工具模块
+
+### 配置管理
+- [utils/config_utils.py](mdc:utils/config_utils.py) - `load_config()`, `save_config()`
+- [configs/](mdc:configs/) - 分层配置文件，新旧格式兼容
+
+### 数据处理系统
+- [utils/data_utils.py](mdc:utils/data_utils.py) - `MyDataset`类，FSL任务采样
+- [utils/graph_utils.py](mdc:utils/graph_utils.py) - `node_flags()`, `mask_adjs()`, `quantize()`
+
+### 模型组件
+- [models/GraphVAE.py](mdc:models/GraphVAE.py) - 双曲图变分自编码器
+- [models/Decoders.py](mdc:models/Decoders.py) - `Classifier`解码器
+- [utils/loader.py](mdc:utils/loader.py) - `load_model_from_ckpt()`, `load_sampling_fn()`
+
+### 采样基础设施  
+- [utils/solver.py](mdc:utils/solver.py) - `get_pc_sampler()` 核心采样算法
+- [utils/sampler.py](mdc:utils/sampler.py) - `Sampler`类，训练期间质量评估
+
+### 几何计算
+- [utils/manifolds_utils.py](mdc:utils/manifolds_utils.py) - 双曲几何操作
+- [utils/sde_lib.py](mdc:utils/sde_lib.py) - 随机微分方程定义
+
+## 数据集和配置
+
+### 支持的数据集
+在 [datasets/](mdc:datasets/) 目录：
+- **ENZYMES** (600图) - 蛋白质结构，batch_size: 256
+- **Letter_high** (~2K图) - 字母识别，batch_size: 128  
+- **Reddit** (1.1K图) - 社交网络，大图场景
+- **TRIANGLES** (2K图) - 几何图形
+
+### 配置文件结构
+```
+configs/
+  ├── letter_high_poincare.yaml    # 主配置文件示例
+  ├── data/                        # 数据集配置
+  ├── old/                         # 历史配置参考
+  └── experiments/                 # 完整实验配置
+```
+
+### 配置兼容性
+- 支持新旧两种配置格式 (`vae.encoder` vs `encoder`)
+- 使用 `SimpleNamespace` 确保属性访问一致性
+- 自动填充缺失字段，确保向后兼容
+
+## 开发最佳实践
+
+### 代码质量要求
+- **可读性优先**: 避免过度工程化，保持简洁
+- **遵循现有约定**: 使用项目统一的命名和结构模式  
+- **错误处理**: 考虑降级策略和用户友好的错误信息
+- **文档注释**: 复杂逻辑提供清晰说明
+
+### 测试和调试
+- 使用小数据集(ENZYMES)快速验证
+- 关注检查点格式兼容性  
+- 验证设备管理和内存使用
+- 检查wandb日志完整性
+
+### 新功能开发流程
+1. **理解现有架构** - 分析相关模块和依赖关系
+2. **最小可行实现** - 基于现有模式进行增量修改
+3. **保持一致性** - 遵循命名约定和错误处理模式
+4. **测试集成** - 确保与三阶段流程无缝集成

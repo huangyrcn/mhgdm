@@ -152,7 +152,7 @@ def train_score(config, vae_checkpoint_path):
                     "best_loss",
                     config,
                 )
-                tqdm.write(f"✓ New best loss: {total_test_loss:.6f}")
+                tqdm.write(f"✓ New best loss: {total_test_loss:.4f}")
 
             if is_best_sample:
                 best_sample_quality = sample_quality
@@ -175,25 +175,25 @@ def train_score(config, vae_checkpoint_path):
             # 更新进度条
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_total:.6f}",
-                    "Test": f"{total_test_loss:.6f}",
+                    "Train": f"{mean_train_total:.4f}",
+                    "Test": f"{total_test_loss:.4f}",
                     "Sample": f"{sample_quality:.4f}",
-                    "Best": f"{min(best_test_loss, total_test_loss):.6f}",
+                    "Best": f"{min(best_test_loss, total_test_loss):.4f}",
                 }
             )
 
             tqdm.write(
-                f"Epoch {epoch}: Train X={mean_train_x:.6f}, Adj={mean_train_adj:.6f} | "
-                f"Test X={mean_test_x:.6f}, Adj={mean_test_adj:.6f} | Sample={sample_quality:.4f}"
+                f"Epoch {epoch}: Train X={mean_train_x:.4f}, Adj={mean_train_adj:.4f} | "
+                f"Test X={mean_test_x:.4f}, Adj={mean_test_adj:.4f} | Sample={sample_quality:.4f}"
             )
         else:
             # 只更新进度条显示训练loss
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_total:.6f}",
+                    "Train": f"{mean_train_total:.4f}",
                     "Test": "N/A",
                     "Sample": "N/A",
-                    "Best": f"{best_test_loss:.6f}",
+                    "Best": f"{best_test_loss:.4f}",
                 }
             )
 
@@ -222,7 +222,7 @@ def train_score(config, vae_checkpoint_path):
     )
 
     tqdm.write(
-        f"Training completed. Best test loss: {best_test_loss:.6f}, Best sample quality: {best_sample_quality:.4f}"
+        f"Training completed. Best test loss: {best_test_loss:.4f}, Best sample quality: {best_sample_quality:.4f}"
     )
 
     # 如果没有最佳采样质量检查点，则使用最终检查点
