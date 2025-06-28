@@ -59,7 +59,10 @@ class Sampler(object):
             if hasattr(self.model_x, "manifold"):
                 manifold = self.model_x.manifold
             else:
-                manifold = get_manifold(self.config.data.get("manifold", "euclidean"))
+                # 从Score配置中获取流形信息
+                manifold_type = self.config.score.x.get("manifold_type", "Euclidean")
+                curvature = self.config.score.x.get("curvature", 1.0)
+                manifold = get_manifold(manifold_type, curvature)
 
             # 设置随机种子
             if hasattr(self.config, "seed"):
@@ -191,4 +194,3 @@ class Sampler(object):
 
 # Note: 分子采样器已移除，因为当前项目专注于图生成任务
 # 如果需要分子生成功能，可以添加 Sampler_mol 类
- 
