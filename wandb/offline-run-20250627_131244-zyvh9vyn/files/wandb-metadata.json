@@ -1,0 +1,63 @@
+{
+  "os": "Linux-6.8.0-60-generic-x86_64-with-glibc2.17",
+  "python": "CPython 3.8.20",
+  "startedAt": "2025-06-27T05:12:44.491335Z",
+  "args": [
+    "--config",
+    "configs/letter_high_poincare.yaml"
+  ],
+  "program": "run_three_stage.py",
+  "codePath": "run_three_stage.py",
+  "git": {
+    "remote": "git@github.com:huangyrcn/mhgdm.git",
+    "commit": "0315895c0c5afa2f6a87301239c545da81868027"
+  },
+  "root": "/home/hyr/mhgdm",
+  "host": "star-NULL",
+  "executable": "/home/hyr/miniconda3/envs/p39/bin/python",
+  "codePathLocal": "run_three_stage.py",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA L40",
+  "gpu_count": 4,
+  "disk": {
+    "/": {
+      "total": "943412031488",
+      "used": "68964507648"
+    }
+  },
+  "memory": {
+    "total": "405361504256"
+  },
+  "cpu": {
+    "count": 64,
+    "countLogical": 128
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA L40",
+      "memoryTotal": "51527024640",
+      "cudaCores": 18176,
+      "architecture": "Ada"
+    },
+    {
+      "name": "NVIDIA L40",
+      "memoryTotal": "51527024640",
+      "cudaCores": 18176,
+      "architecture": "Ada"
+    },
+    {
+      "name": "NVIDIA L40",
+      "memoryTotal": "48305799168",
+      "cudaCores": 18176,
+      "architecture": "Ada"
+    },
+    {
+      "name": "NVIDIA L40",
+      "memoryTotal": "51527024640",
+      "cudaCores": 18176,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.8"
+}

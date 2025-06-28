@@ -242,63 +242,50 @@ class MyDatasetOptimized:
             original_label = graph_data.get_label("original")
             label_counts[original_label] += 1
 
-        # 确定数据分割策略
-        if hasattr(self.config, "test_class_num") and hasattr(self.config, "train_class_num"):
-            # 显式指定训练和测试类别数
-            self.test_class_num = self.config.test_class_num
-            self.train_class_num = self.config.train_class_num
-        else:
-            # 根据test_split比例自动分割
-            test_split = getattr(self.config, "test_split", 0.2)
-            total_classes = len(label_counts)
-            self.test_class_num = max(1, int(total_classes * test_split))
-            self.train_class_num = total_classes - self.test_class_num
+        # 优先尝试加载预定义的类别分割
+        predefined_train_classes, predefined_test_classes = self._load_predefined_class_splits()
 
-        # 根据样本数量排序，确保测试类有足够样本
-        sorted_labels = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)
-
-        # Letter_high特定的类别分配（如果可用）
-        if self.dataset_name == "Letter_high" and len(sorted_labels) >= 15:
-            # 修复：使用数据驱动的分割而不是硬编码的预定义分割
-            # 原来的硬编码分割有问题，导致测试集为空
-            # train_classes = [1, 9, 10, 2, 0, 3, 14, 5, 12, 13, 7]  # 11个训练类
-            # test_classes = [4, 6, 11, 8]  # 4个测试类
-
-            # 新的数据驱动分割：基于样本数量选择最优分割
-            # 选择样本数最多的前11个类别作为训练，后4个作为测试
-            all_labels_sorted = [label for label, _ in sorted_labels]
-            train_classes = all_labels_sorted[: self.train_class_num]  # 前11个
-            test_classes = all_labels_sorted[
-                self.train_class_num : self.train_class_num + self.test_class_num
-            ]  # 后4个
-
-            print(f"Letter_high 数据驱动分割:")
-            print(f"  训练类别: {train_classes}")
-            print(f"  测试类别: {test_classes}")
-
-            # 验证类别是否存在（这里应该都存在，因为是从sorted_labels中选择的）
+        if predefined_train_classes is not None and predefined_test_classes is not None:
+            # 使用预定义分割
             available_labels = set(label_counts.keys())
-            valid_train_classes = [c for c in train_classes if c in available_labels]
-            valid_test_classes = [c for c in test_classes if c in available_labels]
 
-            if (
-                len(valid_train_classes) >= self.train_class_num
-                and len(valid_test_classes) >= self.test_class_num
-            ):
-                self.train_classes = valid_train_classes[: self.train_class_num]
-                self.test_classes = valid_test_classes[: self.test_class_num]
+            # 验证预定义类别是否存在于数据中
+            valid_train_classes = [c for c in predefined_train_classes if c in available_labels]
+            valid_test_classes = [c for c in predefined_test_classes if c in available_labels]
+
+            if valid_train_classes and valid_test_classes:
+                self.train_classes = valid_train_classes
+                self.test_classes = valid_test_classes
+                self.train_class_num = len(self.train_classes)
+                self.test_class_num = len(self.test_classes)
+
+                print(f"✅ 使用预定义类别分割:")
+                print(f"  训练类别数: {self.train_class_num}, 类别: {self.train_classes}")
+                print(f"  测试类别数: {self.test_class_num}, 类别: {self.test_classes}")
             else:
-                # 如果数据驱动分割失败，使用自动分配（这种情况应该不会发生）
-                print("警告：数据驱动分割失败，使用自动分配")
-                self.test_classes = [label for label, _ in sorted_labels[: self.test_class_num]]
-                self.train_classes = [
-                    label
-                    for label, _ in sorted_labels[
-                        self.test_class_num : self.test_class_num + self.train_class_num
-                    ]
-                ]
-        else:
-            # 其他数据集的自动分配
+                print(f"⚠️ 预定义类别与数据不匹配，回退到自动分割")
+                predefined_train_classes, predefined_test_classes = None, None
+
+        # 如果没有预定义分割或预定义分割无效，则使用原有逻辑
+        if predefined_train_classes is None or predefined_test_classes is None:
+            print(f"📊 使用自动类别分割...")
+
+            # 确定数据分割策略
+            if hasattr(self.config, "test_class_num") and hasattr(self.config, "train_class_num"):
+                # 显式指定训练和测试类别数
+                self.test_class_num = self.config.test_class_num
+                self.train_class_num = self.config.train_class_num
+            else:
+                # 根据test_split比例自动分割
+                test_split = getattr(self.config, "test_split", 0.2)
+                total_classes = len(label_counts)
+                self.test_class_num = max(1, int(total_classes * test_split))
+                self.train_class_num = total_classes - self.test_class_num
+
+            # 根据样本数量排序，确保测试类有足够样本
+            sorted_labels = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)
+
+            # 自动分配类别
             self.test_classes = [label for label, _ in sorted_labels[: self.test_class_num]]
             self.train_classes = [
                 label
@@ -306,6 +293,9 @@ class MyDatasetOptimized:
                     self.test_class_num : self.test_class_num + self.train_class_num
                 ]
             ]
+
+            print(f"  训练类别数: {self.train_class_num}, 类别: {self.train_classes}")
+            print(f"  测试类别数: {self.test_class_num}, 类别: {self.test_classes}")
 
         # 为图数据分配训练/测试标签
         train_label_map = {
@@ -373,6 +363,20 @@ class MyDatasetOptimized:
         for idx, graph_data in enumerate(self.test_graphs):
             class_id = graph_data.get_label("test_split")
             self.test_indices_by_class[class_id].append(idx)
+
+        # 计算各类别可用样本数（用于统计）
+        if hasattr(self.fsl_config, "K_shot"):
+            K_shot = self.fsl_config.K_shot
+        else:
+            K_shot = 1  # 默认值
+
+        total_query_samples = 0
+        for class_id in sorted(self.test_indices_by_class.keys()):
+            class_indices = self.test_indices_by_class[class_id]
+            remaining_count = max(0, len(class_indices) - K_shot)
+            total_query_samples += remaining_count
+
+        print(f"✓ FSL索引构建完成: 总查询样本数={total_query_samples}")
 
     def get_loaders(self):
         """返回训练和测试数据加载器"""
@@ -454,38 +458,171 @@ class MyDatasetOptimized:
         }
 
     def sample_one_task(self, is_train, N_way, K_shot, R_query, query_pool_start_index=None):
-        """采样一个FSL任务"""
+        """
+        采样一个FSL任务
+
+        训练时：
+        - 支持集：从训练类别中随机采样的 K 个样本
+        - 查询集：从同一类别中随机采样的接下来 R 个样本
+        - 每次都重新随机打乱，确保多样性
+
+        测试时：
+        - 支持集：从测试类别中固定取前 K 个样本
+        - 查询集：从预先构建的 total_test_g_list（全局测试样本池）中按序取样本
+        - 不重新打乱，确保测试的一致性
+
+        Args:
+            is_train: 是否为训练模式
+            N_way: N-way分类
+            K_shot: 每类支持样本数
+            R_query: 每类查询样本数（查询集总大小为 N_way * R_query）
+            query_pool_start_index: 查询池起始索引，用于测试模式的全局池采样
+
+        Returns:
+            task: 包含support_set和query_set的任务
+        """
         if is_train:
+            # ==================== 训练模式 ====================
+            # 支持集和查询集都从同一类别内随机采样
             indices_map = self.train_indices_by_class
-            # 训练集：使用重映射后的类别ID（0到len(train_classes)-1）
             available_classes = list(range(len(self.train_classes)))
             x_tensor, adj_tensor = self.train_x, self.train_adj
+
+            # 过滤掉样本数不足的类别
+            valid_classes = [
+                c for c in available_classes if len(indices_map.get(c, [])) >= K_shot + R_query
+            ]
+
+            if len(valid_classes) < N_way:
+                return None
+
+            # 随机选择N_way个类别
+            selected_classes = np.random.choice(valid_classes, N_way, replace=False)
+
+            support_indices = []
+            support_labels = []
+            query_indices = []
+            query_labels = []
+
+            for class_idx, class_id in enumerate(selected_classes):
+                class_indices = indices_map[class_id]
+                total_needed = K_shot + R_query
+
+                if len(class_indices) >= total_needed:
+                    # 随机采样K+R个样本
+                    selected_indices = np.random.choice(
+                        class_indices, total_needed, replace=False
+                    ).tolist()
+                    class_support_indices = selected_indices[:K_shot]
+                    class_query_indices = selected_indices[K_shot:]
+                else:
+                    # 样本不足时用重复采样
+                    selected_indices = (
+                        class_indices
+                        + np.random.choice(
+                            class_indices, total_needed - len(class_indices), replace=True
+                        ).tolist()
+                    )
+                    class_support_indices = selected_indices[:K_shot]
+                    class_query_indices = selected_indices[K_shot : K_shot + R_query]
+
+                # 添加到支持集
+                support_indices.extend(class_support_indices)
+                support_labels.extend([class_idx] * len(class_support_indices))
+
+                # 添加到查询集
+                query_indices.extend(class_query_indices)
+                query_labels.extend([class_idx] * len(class_query_indices))
+
+            # 训练模式不需要填充样本
+            append_count = 0
+
         else:
+            # ==================== 测试模式 ====================
+            # 支持集固定，查询集从全局池按序取样
             indices_map = self.test_indices_by_class
-            # 测试集：使用重映射后的类别ID（0到len(test_classes)-1）
             available_classes = list(range(len(self.test_classes)))
             x_tensor, adj_tensor = self.test_x, self.test_adj
 
-        task_data = self._sample_indices_for_task(
-            indices_map, available_classes, N_way, K_shot, R_query
-        )
+            # 过滤掉样本数不足的类别（支持集需要）
+            valid_classes = [c for c in available_classes if len(indices_map.get(c, [])) >= K_shot]
 
-        if task_data is None:
-            return None
+            if len(valid_classes) < N_way:
+                return None
 
-        # 构建支持集
-        support_indices = []
-        support_labels = []
-        for class_idx, class_support_indices in enumerate(task_data["support_indices"]):
-            support_indices.extend(class_support_indices)
-            support_labels.extend([class_idx] * len(class_support_indices))
+            # 固定选择前N_way个有效类别（确保一致性）
+            selected_classes = valid_classes[:N_way]
 
-        # 构建查询集
-        query_indices = []
-        query_labels = []
-        for class_idx, class_query_indices in enumerate(task_data["query_indices"]):
-            query_indices.extend(class_query_indices)
-            query_labels.extend([class_idx] * len(class_query_indices))
+            # 构建固定支持集
+            support_indices = []
+            support_labels = []
+
+            for class_idx, class_id in enumerate(selected_classes):
+                class_indices = indices_map[class_id]
+                # 固定取前K_shot个样本作为支持集
+                class_support_indices = class_indices[:K_shot]
+                support_indices.extend(class_support_indices)
+                support_labels.extend([class_idx] * len(class_support_indices))
+
+            # 修复：正确构建查询集，确保标签匹配
+            query_pool_start = query_pool_start_index if query_pool_start_index is not None else 0
+
+            query_indices = []
+            query_labels = []
+            append_count = 0
+
+            # 计算每个类别可用的查询样本
+            available_query_samples = {}
+            for class_idx, class_id in enumerate(selected_classes):
+                class_indices = indices_map[class_id]
+                # 除去支持集后的剩余样本
+                remaining_indices = class_indices[K_shot:]
+                available_query_samples[class_idx] = remaining_indices
+
+            # 检查是否有足够的查询样本
+            min_available = min(len(samples) for samples in available_query_samples.values())
+            required_per_class = R_query
+
+            # 计算可以采样的最大任务数
+            if min_available == 0:
+                return None  # 没有查询样本可用
+
+            # 计算当前任务的查询集起始偏移
+            max_possible_tasks = min_available // required_per_class
+            current_task_offset = query_pool_start // (N_way * R_query)
+
+            if current_task_offset >= max_possible_tasks:
+                return None  # 已经超出可用任务数
+
+            # 为每个类别采样查询样本
+            for class_idx, class_id in enumerate(selected_classes):
+                available_indices = available_query_samples[class_idx]
+
+                # 计算当前类别的采样起始位置
+                start_offset = current_task_offset * required_per_class
+                end_offset = start_offset + required_per_class
+
+                if start_offset >= len(available_indices):
+                    # 没有足够样本，返回None停止采样
+                    return None
+
+                # 取出当前任务需要的查询样本
+                if end_offset <= len(available_indices):
+                    class_query_indices = available_indices[start_offset:end_offset]
+                else:
+                    # 样本不足，用重复填充
+                    class_query_indices = available_indices[start_offset:]
+                    while len(class_query_indices) < required_per_class:
+                        if len(class_query_indices) > 0:
+                            class_query_indices.append(class_query_indices[-1])
+                            append_count += 1
+                        else:
+                            # 如果完全没有样本，返回None
+                            return None
+
+                # 添加到查询集
+                query_indices.extend(class_query_indices[:required_per_class])
+                query_labels.extend([class_idx] * required_per_class)
 
         # 提取张量数据
         support_x = x_tensor[support_indices]
@@ -510,18 +647,32 @@ class MyDatasetOptimized:
             "N_way": N_way,
             "K_shot": K_shot,
             "R_query": R_query,
-            "selected_classes": task_data["selected_classes"],
+            "selected_classes": selected_classes,
+            "append_count": append_count,
         }
 
     def _print_dataset_summary(self):
         """打印数据集摘要"""
-        print(f"✓ Dataset loaded:")
-        print(f"  Train graphs: {len(self.train_graphs)}")
-        print(f"  Test graphs: {len(self.test_graphs)}")
-        print(f"  Train classes: {self.train_class_num}")
-        print(f"  Test classes: {self.test_class_num}")
-        print(f"  Max nodes: {self.max_node_num}")
-        print(f"  Max features: {self.max_feat_dim}")
+        pass
+
+    def _load_predefined_class_splits(self):
+        """加载预定义的类别分割文件"""
+        split_file_path = f"datasets/{self.dataset_name}/train_test_classes.json"
+
+        if os.path.exists(split_file_path):
+            try:
+                import json
+
+                with open(split_file_path, "r") as f:
+                    splits = json.load(f)
+                    train_classes = splits.get("train", [])
+                    test_classes = splits.get("test", [])
+
+                return train_classes, test_classes
+            except Exception as e:
+                return None, None
+        else:
+            return None, None
 
 
 def load_from_file(data_config, use_degree_as_tag):

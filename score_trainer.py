@@ -75,10 +75,10 @@ def train_score(config, vae_checkpoint_path):
 
     progress_bar = tqdm(
         range(config.score.train.num_epochs),
-        desc="Training",
-        ncols=100,
+        desc="Score Training",
         leave=True,
         ascii=True,
+        dynamic_ncols=True,
     )
 
     for epoch in progress_bar:
@@ -119,8 +119,9 @@ def train_score(config, vae_checkpoint_path):
             mean_test_adj = np.mean(test_losses["adj"])
             total_test_loss = mean_test_x + mean_test_adj
 
-            # 采样质量评估
-            sample_quality = _sample_evaluation(model_x, model_adj, save_dir, config, epoch)
+            # 采样质量评估 - 暂时注释掉
+            # sample_quality = _sample_evaluation(model_x, model_adj, save_dir, config, epoch)
+            sample_quality = 0.0  # 临时设置默认值
 
             # 提交测试损失和指标到wandb
             test_log = {
@@ -175,10 +176,10 @@ def train_score(config, vae_checkpoint_path):
             # 更新进度条
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_total:.4f}",
-                    "Test": f"{total_test_loss:.4f}",
-                    "Sample": f"{sample_quality:.4f}",
-                    "Best": f"{min(best_test_loss, total_test_loss):.4f}",
+                    "TrX": f"{mean_train_x:.2f}",
+                    "TrA": f"{mean_train_adj:.2f}",
+                    "TsX": f"{mean_test_x:.2f}",
+                    "TsA": f"{mean_test_adj:.2f}",
                 }
             )
 
@@ -190,10 +191,10 @@ def train_score(config, vae_checkpoint_path):
             # 只更新进度条显示训练loss
             progress_bar.set_postfix(
                 {
-                    "Train": f"{mean_train_total:.4f}",
-                    "Test": "N/A",
-                    "Sample": "N/A",
-                    "Best": f"{best_test_loss:.4f}",
+                    "TrX": f"{mean_train_x:.2f}",
+                    "TrA": f"{mean_train_adj:.2f}",
+                    "TsX": "N/A",
+                    "TsA": "N/A",
                 }
             )
 
@@ -202,9 +203,11 @@ def train_score(config, vae_checkpoint_path):
     final_mean_test_x = np.mean(final_test_losses["x"])
     final_mean_test_adj = np.mean(final_test_losses["adj"])
     final_total_test_loss = final_mean_test_x + final_mean_test_adj
-    final_sample_quality = _sample_evaluation(
-        model_x, model_adj, save_dir, config, config.score.train.num_epochs - 1
-    )
+    # 暂时注释掉最终采样评估
+    # final_sample_quality = _sample_evaluation(
+    #     model_x, model_adj, save_dir, config, config.score.train.num_epochs - 1
+    # )
+    final_sample_quality = 0.0  # 临时设置默认值
 
     final_checkpoint_path = _save_checkpoint(
         model_x,

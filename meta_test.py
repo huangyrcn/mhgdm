@@ -695,12 +695,13 @@ def _run_evaluation(dataset, encoder, diffusion_model, config, device, use_augme
 
     for task_idx in progress_bar:
         try:
-            # 采样任务 - 修复参数
+            # 采样任务 - 使用固定支持集+滑动查询集模式
             task = dataset.sample_one_task(
                 is_train=False,  # 从测试集采样
                 N_way=config.fsl_task.N_way,
                 K_shot=config.fsl_task.K_shot,
                 R_query=config.fsl_task.R_query,
+                query_pool_start_index=task_idx,  # 使用query_pool_start_index实现滑动查询集
             )
 
             if task is None:

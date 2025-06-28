@@ -24,8 +24,8 @@ fsl_task:
   N_way: 4  # 4个测试类别
   K_shot: 5
   R_query: 10
-  num_test_tasks: 5  # 修复：改为num_test_tasks
-
+  max_train_meta_tasks: 10
+  max_test_meta_tasks: 50
 # ==================== Wandb配置 ====================
 wandb:
   project: "MHGDM_LetterHigh"
@@ -78,7 +78,7 @@ vae:
   
   # 训练配置
   train:
-    num_epochs: 30
+    num_epochs: 200
     lr: 0.001
     lr_decay: 0.995
     lr_schedule: true
@@ -142,7 +142,7 @@ score:
   
   # 训练配置
   train:
-    num_epochs: 200
+    num_epochs: 2000
     lr: 0.0001
     lr_decay: 0.999
     lr_schedule: true
