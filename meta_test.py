@@ -130,7 +130,6 @@ def _load_encoder(checkpoint_path, device):
         model_config.decoder_config = SimpleNamespace(**vae_config["vae"]["decoder"])
         model_config.pred_node_class = vae_config["vae"]["loss"]["pred_node_class"]
         model_config.pred_edge = vae_config["vae"]["loss"]["pred_edge"]
-        model_config.pred_graph_class = vae_config["vae"]["loss"]["pred_graph_class"]
         model_config.use_kl_loss = vae_config["vae"]["loss"]["use_kl_loss"]
         model_config.latent_dim = vae_config["vae"]["encoder"]["latent_feature_dim"]
     else:
@@ -139,7 +138,6 @@ def _load_encoder(checkpoint_path, device):
         model_config.decoder_config = SimpleNamespace(**vae_config["decoder"])
         model_config.pred_node_class = vae_config["loss"]["pred_node_class"]
         model_config.pred_edge = vae_config["loss"]["pred_edge"]
-        model_config.pred_graph_class = vae_config["loss"]["pred_graph_class"]
         model_config.use_kl_loss = vae_config["loss"]["use_kl_loss"]
         model_config.latent_dim = vae_config["encoder"]["latent_feature_dim"]
 

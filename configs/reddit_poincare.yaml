@@ -74,9 +74,8 @@ vae:
   
   # 损失配置
   loss:
-    pred_node_class: true
+        pred_node_class: true
     pred_edge: false  # 大图禁用边预测以节省计算
-    pred_graph_class: true  # 启用图级分类
     use_kl_loss: true
     use_base_proto_loss: false
     use_sep_proto_loss: false
@@ -92,9 +91,8 @@ vae:
     
     # 损失权重 - 大图调整
     rec_weight: 1.0
-    kl_regularization: 0.00001  # 降低KL正则化
+        kl_regularization: 0.00001  # 降低KL正则化
     edge_weight: 0.0  # 禁用边预测
-    graph_classification_weight: 0.1  # 启用图级分类
     base_proto_weight: 0.0
     sep_proto_weight: 0.0
     

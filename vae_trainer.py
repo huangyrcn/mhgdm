@@ -89,9 +89,22 @@ def train_vae(config):
         progress_bar.set_postfix({"Train_Loss": f"{train_metrics['train_loss']:.3f}"})
 
         # 是否需要评估？
-        if (epoch % config.vae.train.test_interval == 0) or (
-            epoch == config.vae.train.num_epochs - 1
-        ):
+        test_interval = config.vae.train.test_interval
+        should_eval = False
+
+        if test_interval == 0:
+            # test_interval=0 表示只在最后一个epoch评估
+            should_eval = epoch == config.vae.train.num_epochs - 1
+        elif test_interval == 1:
+            # test_interval=1 表示每个epoch都评估
+            should_eval = True
+        else:
+            # test_interval>1 表示按间隔评估，但跳过第一个epoch
+            should_eval = (epoch > 0 and epoch % test_interval == 0) or (
+                epoch == config.vae.train.num_epochs - 1
+            )
+
+        if should_eval:
             eval_metrics = eval_one_epoch(trainer_state, epoch)
 
             # 保存最佳模型
@@ -257,8 +270,6 @@ def train_one_epoch(state, epoch):
             edge_loss,
             base_proto_loss,
             sep_proto_loss,
-            graph_classification_loss,
-            _,
         ) = model(x, adj, labels)
 
         # 总损失计算
@@ -268,7 +279,6 @@ def train_one_epoch(state, epoch):
             + state.config.vae.train.edge_weight * edge_loss
             + state.config.vae.train.base_proto_weight * base_proto_loss
             + state.config.vae.train.sep_proto_weight * sep_proto_loss
-            + state.config.vae.train.graph_classification_weight * graph_classification_loss
         )
 
         # 反向传播
@@ -324,8 +334,6 @@ def eval_one_epoch(state, epoch):
                 edge_loss,
                 base_proto_loss,
                 sep_proto_loss,
-                graph_classification_loss,
-                _,
             ) = model(x, adj, labels)
 
             total_loss = (
@@ -334,7 +342,6 @@ def eval_one_epoch(state, epoch):
                 + state.config.vae.train.edge_weight * edge_loss
                 + state.config.vae.train.base_proto_weight * base_proto_loss
                 + state.config.vae.train.sep_proto_weight * sep_proto_loss
-                + state.config.vae.train.graph_classification_weight * graph_classification_loss
             )
 
             test_losses["total"].append(total_loss.item())
@@ -400,7 +407,6 @@ def _init_model(config, device):
     vae_config = SimpleNamespace()
     vae_config.pred_node_class = config.vae.loss.pred_node_class
     vae_config.pred_edge = config.vae.loss.pred_edge
-    vae_config.pred_graph_class = config.vae.loss.pred_graph_class
     vae_config.use_kl_loss = config.vae.loss.use_kl_loss
     vae_config.use_base_proto_loss = config.vae.loss.use_base_proto_loss
     vae_config.use_sep_proto_loss = config.vae.loss.use_sep_proto_loss
@@ -608,7 +614,7 @@ def meta_eval(encoder, dataset, config, device, is_train=False):
 
 
 def _extract_features(encoder, x_batch, adj_batch, device):
-    """使用编码器提取图级特征 - 复用VAE内部的完整实现"""
+    """使用编码器提取特征"""
     with torch.no_grad():
         # 生成node_mask
         node_mask = node_flags(adj_batch)
@@ -616,34 +622,46 @@ def _extract_features(encoder, x_batch, adj_batch, device):
 
         # 使用编码器提取特征
         posterior = encoder(x_batch, adj_batch, node_mask)
-        emb_from_posterior = posterior.mode()  # 获取后验分布的模式
+        z_mu = posterior.mode()  # 获取后验分布的模式
 
-        # 使用与GraphVAE相同的图级特征提取逻辑
-        if emb_from_posterior.dim() == 2:
-            emb_for_pooling = emb_from_posterior.unsqueeze(1)
+        # 处理维度：确保是3维 [batch_size, num_nodes, latent_dim]
+        if z_mu.dim() == 2:
+            emb_for_pooling = z_mu.unsqueeze(1)
         else:
-            emb_for_pooling = emb_from_posterior
+            emb_for_pooling = z_mu
 
-        # 处理双曲空间映射
-        if encoder.manifold is not None:
-            emb_in_tangent_space = encoder.manifold.logmap0(emb_for_pooling)
+        # 关键修复：检查编码器是否使用流形
+        if hasattr(encoder, "manifold") and encoder.manifold is not None:
+            # 双曲流形：先转换到切空间再进行pooling
+            manifold = encoder.manifold
+            emb_in_tangent_space = manifold.logmap0(emb_for_pooling)
         else:
+            # 欧几里得空间：直接处理
             emb_in_tangent_space = emb_for_pooling
 
-        # 应用node_mask
-        masked_emb = emb_in_tangent_space * node_mask
+        # 应用节点掩码 - 重要！确保只对有效节点进行池化
+        node_mask_for_pooling = node_mask.squeeze(-1)  # [batch_size, num_nodes]
+        masked_emb = emb_in_tangent_space * node_mask.expand_as(emb_in_tangent_space)
 
         # 计算有效节点数
-        num_valid_nodes = node_mask.sum(dim=1, keepdim=True)  # [batch_size, 1, 1]
-        num_valid_nodes = torch.clamp(num_valid_nodes, min=1.0)
+        num_valid_nodes = node_mask_for_pooling.sum(dim=1, keepdim=True).float()  # [batch_size, 1]
+        num_valid_nodes = torch.clamp(num_valid_nodes, min=1.0)  # 避免除零
 
-        # Mean + Max pooling (与GraphVAE一致)
-        mean_pooled_features = masked_emb.sum(dim=1) / num_valid_nodes.squeeze(
-            -1
-        )  # [batch_size, latent_dim]
-        max_pooled_features = masked_emb.max(dim=1).values  # [batch_size, latent_dim]
+        # 使用与GraphVAE一致的组合池化策略：mean + max
+        # Mean池化：考虑有效节点数
+        mean_pooled_features = masked_emb.sum(dim=1) / num_valid_nodes  # [batch_size, latent_dim]
 
-        # 拼接得到更丰富的图级表示
+        # Max池化：对于无效节点位置设置为负无穷，确保不会被选为最大值
+        masked_emb_for_max = emb_in_tangent_space.clone()
+        invalid_mask = (node_mask_for_pooling == 0).unsqueeze(-1).expand_as(emb_in_tangent_space)
+        masked_emb_for_max[invalid_mask] = float("-inf")
+        max_pooled_features = masked_emb_for_max.max(dim=1).values  # [batch_size, latent_dim]
+
+        # 处理全为无效节点的情况：如果某个图所有节点都无效，max pooling会返回-inf
+        # 将这些位置设为0
+        max_pooled_features[max_pooled_features == float("-inf")] = 0.0
+
+        # 组合特征：concatenate mean和max特征
         graph_features = torch.cat(
             [mean_pooled_features, max_pooled_features], dim=-1
         )  # [batch_size, latent_dim*2]

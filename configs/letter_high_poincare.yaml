@@ -69,9 +69,8 @@ vae:
   
   # 损失配置
   loss:
-    pred_node_class: true
+        pred_node_class: true
     pred_edge: false
-    pred_graph_class: false
     use_kl_loss: true
     use_base_proto_loss: false
     use_sep_proto_loss: false
@@ -88,9 +87,8 @@ vae:
     
     # 损失权重
     rec_weight: 1.0
-    kl_regularization: 0.0001
+        kl_regularization: 0.0001
     edge_weight: 0.01
-    graph_classification_weight: 0.0
     base_proto_weight: 0.0
     sep_proto_weight: 0.0
     

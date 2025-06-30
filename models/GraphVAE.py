@@ -17,13 +17,15 @@ class OneHotCrossEntropyLoss(torch.nn.Module):
     def forward(self, predictions, targets):
         """
         Compute cross-entropy loss between predictions and one-hot targets.
-        
+
         Args:
             predictions: Model predictions [batch_size, num_nodes, num_classes]
             targets: One-hot encoded targets [batch_size, num_nodes, num_classes]
         """
         probabilities = torch.nn.functional.softmax(predictions, dim=2)
-        log_prob_loss = targets * torch.log(probabilities + 1e-7)  # Add small epsilon for numerical stability
+        log_prob_loss = targets * torch.log(
+            probabilities + 1e-7
+        )  # Add small epsilon for numerical stability
         total_loss = -torch.sum(torch.sum(log_prob_loss, dim=2))
         return total_loss
 
@@ -33,165 +35,166 @@ class GraphVAE(nn.Module):
     def __init__(self, config):
         """
         Initialize GraphVAE with a single configuration object.
-        
+
         Args:
             config: Configuration object containing all model parameters including:
                 - pred_node_class: Enable node-level prediction/reconstruction
                 - pred_edge: Enable edge prediction
-                - pred_graph_class: Enable graph-level classification
                 - use_kl_loss: Enable KL divergence loss
                 - use_base_proto_loss: Enable base prototype loss
                 - use_sep_proto_loss: Enable prototype separation loss
                 - encoder_config: Configuration for encoder (must have 'type' attribute)
                 - decoder_config: Configuration for decoder (must have 'type' attribute)
                 - edge_predictor_config: Configuration for edge predictor
-                - graph_classifier_config: Configuration for graph classifier
-                - num_graph_classes: Number of graph classes
                 - latent_dim: Latent dimension
                 - device: Device for computation
         """
         super(GraphVAE, self).__init__()
-        
+
         # Validate required configs
-        encoder_config = getattr(config, 'encoder_config', None)
-        decoder_config = getattr(config, 'decoder_config', None)
-        
+        encoder_config = getattr(config, "encoder_config", None)
+        decoder_config = getattr(config, "decoder_config", None)
+
         if encoder_config is None:
             raise ValueError("encoder_config is required")
         if decoder_config is None:
             raise ValueError("decoder_config is required")
-        
+
         # Extract parameters from config with defaults
-        self.device = getattr(config, 'device', 'cpu')
-        self.pred_node_class = getattr(config, 'pred_node_class', True)
-        self.pred_edge_enabled = getattr(config, 'pred_edge', False)
-        self.pred_graph_class_enabled = getattr(config, 'pred_graph_class', False)
-        self.use_kl_loss = getattr(config, 'use_kl_loss', True)
-        self.use_base_proto_loss = getattr(config, 'use_base_proto_loss', False)
-        self.use_sep_proto_loss = getattr(config, 'use_sep_proto_loss', False)
-        self.num_graph_classes = getattr(config, 'num_graph_classes', 3)
-        self.latent_dim = getattr(config, 'latent_dim', 10)
-        
+        self.device = getattr(config, "device", "cpu")
+        self.pred_node_class = getattr(config, "pred_node_class", True)
+        self.pred_edge_enabled = getattr(config, "pred_edge", False)
+        self.use_kl_loss = getattr(config, "use_kl_loss", True)
+        self.use_base_proto_loss = getattr(config, "use_base_proto_loss", False)
+        self.use_sep_proto_loss = getattr(config, "use_sep_proto_loss", False)
+        self.latent_dim = getattr(config, "latent_dim", 10)
+
         # Extract sub-module configurations
-        edge_predictor_config = getattr(config, 'edge_predictor_config', None)
-        graph_classifier_config = getattr(config, 'graph_classifier_config', None)
-        
+        edge_predictor_config = getattr(config, "edge_predictor_config", None)
+
         # Initialize encoder and decoder with their specific configs
         self._initialize_encoder_decoder(encoder_config, decoder_config)
-        
+
         # Loss function for node classification/reconstruction
         self.node_reconstruction_loss_fn = OneHotCrossEntropyLoss()
         # Alias for backward compatibility
         self.loss_fn = self.node_reconstruction_loss_fn
-        
+
         # Get manifold from encoder
-        self.manifold = getattr(self.encoder, 'manifold', None)
+        self.manifold = getattr(self.encoder, "manifold", None)
 
         # Initialize edge prediction if enabled
         if self.pred_edge_enabled:
             self._initialize_edge_prediction(edge_predictor_config)
 
-        # Initialize graph-level classification components
-        self._initialize_graph_classification(graph_classifier_config)
-        
+        # Initialize graph prototypes for prototype loss if enabled
+        if self.use_base_proto_loss or self.use_sep_proto_loss:
+            self._initialize_graph_prototypes()
+
         self.current_epoch = 0
 
     def _initialize_encoder_decoder(self, encoder_config, decoder_config):
         """Initialize encoder and decoder based on their specific configurations."""
         # Initialize encoder
-        if not hasattr(encoder_config, 'type'):
+        if not hasattr(encoder_config, "type"):
             raise ValueError("encoder_config must have 'type' attribute")
-            
+
         encoder_type = encoder_config.type
-        if encoder_type == 'EuclideanGraphEncoder':
+        if encoder_type == "EuclideanGraphEncoder":
             self.encoder = Encoders.EuclideanGraphEncoder(
                 input_feature_dim=encoder_config.input_feature_dim,
-                hidden_feature_dim=getattr(encoder_config, 'hidden_feature_dim', 32),
-                latent_feature_dim=getattr(encoder_config, 'latent_feature_dim', 10),
-                num_encoder_layers=getattr(encoder_config, 'num_layers', 3),
-                layer_type=getattr(encoder_config, 'layer_type', 'GCN'),
-                dropout=getattr(encoder_config, 'dropout', 0.0),
-                edge_dim=getattr(encoder_config, 'edge_dim', 1),
-                normalization_factor=getattr(encoder_config, 'normalization_factor', 1.0),
-                aggregation_method=getattr(encoder_config, 'aggregation_method', 'sum'),
-                message_transformation=getattr(encoder_config, 'message_transformation', 'linear')
+                hidden_feature_dim=getattr(encoder_config, "hidden_feature_dim", 32),
+                latent_feature_dim=getattr(encoder_config, "latent_feature_dim", 10),
+                num_encoder_layers=getattr(encoder_config, "num_layers", 3),
+                layer_type=getattr(encoder_config, "layer_type", "GCN"),
+                dropout=getattr(encoder_config, "dropout", 0.0),
+                edge_dim=getattr(encoder_config, "edge_dim", 1),
+                normalization_factor=getattr(encoder_config, "normalization_factor", 1.0),
+                aggregation_method=getattr(encoder_config, "aggregation_method", "sum"),
+                message_transformation=getattr(encoder_config, "message_transformation", "linear"),
             )
-        elif encoder_type == 'HyperbolicGraphEncoder':
+        elif encoder_type == "HyperbolicGraphEncoder":
             self.encoder = Encoders.HyperbolicGraphEncoder(
-                input_feature_dim=getattr(encoder_config, 'input_feature_dim', 3),
-                hidden_feature_dim=getattr(encoder_config, 'hidden_feature_dim', 32),
-                latent_feature_dim=getattr(encoder_config, 'latent_feature_dim', 10),
-                num_encoder_layers=getattr(encoder_config, 'num_layers', 3),
-                layer_type=getattr(encoder_config, 'layer_type', 'HGAT'),
-                dropout=getattr(encoder_config, 'dropout', 0.0),
-                edge_dim=getattr(encoder_config, 'edge_dim', 1),
-                normalization_factor=getattr(encoder_config, 'normalization_factor', 1.0),
-                aggregation_method=getattr(encoder_config, 'aggregation_method', 'sum'),
-                message_transformation=getattr(encoder_config, 'message_transformation', 'linear'),
-                aggregation_transformation=getattr(encoder_config, 'aggregation_transformation', 'linear'),
-                use_normalization=getattr(encoder_config, 'use_normalization', False),
-                manifold_type=getattr(encoder_config, 'manifold_type', 'PoincareBall'),
-                curvature=getattr(encoder_config, 'curvature', 1.0),
-                learnable_curvature=getattr(encoder_config, 'learnable_curvature', False)
+                input_feature_dim=getattr(encoder_config, "input_feature_dim", 3),
+                hidden_feature_dim=getattr(encoder_config, "hidden_feature_dim", 32),
+                latent_feature_dim=getattr(encoder_config, "latent_feature_dim", 10),
+                num_encoder_layers=getattr(encoder_config, "num_layers", 3),
+                layer_type=getattr(encoder_config, "layer_type", "HGAT"),
+                dropout=getattr(encoder_config, "dropout", 0.0),
+                edge_dim=getattr(encoder_config, "edge_dim", 1),
+                normalization_factor=getattr(encoder_config, "normalization_factor", 1.0),
+                aggregation_method=getattr(encoder_config, "aggregation_method", "sum"),
+                message_transformation=getattr(encoder_config, "message_transformation", "linear"),
+                aggregation_transformation=getattr(
+                    encoder_config, "aggregation_transformation", "linear"
+                ),
+                use_normalization=getattr(encoder_config, "use_normalization", False),
+                manifold_type=getattr(encoder_config, "manifold_type", "PoincareBall"),
+                curvature=getattr(encoder_config, "curvature", 1.0),
+                learnable_curvature=getattr(encoder_config, "learnable_curvature", False),
             )
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_type}")
-        
+
         # Initialize decoder
-        if not hasattr(decoder_config, 'type'):
+        if not hasattr(decoder_config, "type"):
             raise ValueError("decoder_config must have 'type' attribute")
-            
+
         decoder_type = decoder_config.type
-        if decoder_type == 'EuclideanGraphDecoder':
+        if decoder_type == "EuclideanGraphDecoder":
             self.decoder = Decoders.EuclideanGraphDecoder(
-                latent_feature_dim=getattr(decoder_config, 'latent_feature_dim', 10),
-                hidden_feature_dim=getattr(decoder_config, 'hidden_feature_dim', 32),
-                output_feature_dim=getattr(decoder_config, 'output_feature_dim', 3),
-                num_decoder_layers=getattr(decoder_config, 'num_layers', 3),
-                layer_type=getattr(decoder_config, 'layer_type', 'GCN'),
-                dropout=getattr(decoder_config, 'dropout', 0.0),
-                edge_dim=getattr(decoder_config, 'edge_dim', 1),
-                normalization_factor=getattr(decoder_config, 'normalization_factor', 1.0),
-                aggregation_method=getattr(decoder_config, 'aggregation_method', 'sum'),
-                message_transformation=getattr(decoder_config, 'message_transformation', 'linear')
+                latent_feature_dim=getattr(decoder_config, "latent_feature_dim", 10),
+                hidden_feature_dim=getattr(decoder_config, "hidden_feature_dim", 32),
+                output_feature_dim=getattr(decoder_config, "output_feature_dim", 3),
+                num_decoder_layers=getattr(decoder_config, "num_layers", 3),
+                layer_type=getattr(decoder_config, "layer_type", "GCN"),
+                dropout=getattr(decoder_config, "dropout", 0.0),
+                edge_dim=getattr(decoder_config, "edge_dim", 1),
+                normalization_factor=getattr(decoder_config, "normalization_factor", 1.0),
+                aggregation_method=getattr(decoder_config, "aggregation_method", "sum"),
+                message_transformation=getattr(decoder_config, "message_transformation", "linear"),
             )
-        elif decoder_type == 'HyperbolicGraphDecoder':
+        elif decoder_type == "HyperbolicGraphDecoder":
             self.decoder = Decoders.HyperbolicGraphDecoder(
-                latent_feature_dim=getattr(decoder_config, 'latent_feature_dim', 10),
-                hidden_feature_dim=getattr(decoder_config, 'hidden_feature_dim', 32),
-                output_feature_dim=getattr(decoder_config, 'output_feature_dim', 3),
-                num_decoder_layers=getattr(decoder_config, 'num_layers', 3),
-                layer_type=getattr(decoder_config, 'layer_type', 'HGAT'),
-                dropout=getattr(decoder_config, 'dropout', 0.0),
-                edge_dim=getattr(decoder_config, 'edge_dim', 1),
-                normalization_factor=getattr(decoder_config, 'normalization_factor', 1.0),
-                aggregation_method=getattr(decoder_config, 'aggregation_method', 'sum'),
-                message_transformation=getattr(decoder_config, 'message_transformation', 'linear'),
-                aggregation_transformation=getattr(decoder_config, 'aggregation_transformation', 'linear'),
-                use_normalization=getattr(decoder_config, 'use_normalization', False),
-                manifold_type=getattr(decoder_config, 'manifold_type', 'PoincareBall'),
-                curvature=getattr(decoder_config, 'curvature', 1.0),
-                learnable_curvature=getattr(decoder_config, 'learnable_curvature', False),
-                use_centroid=getattr(decoder_config, 'use_centroid', False),
-                input_manifold=self.encoder.manifolds[-1] if hasattr(self.encoder, 'manifolds') else None
+                latent_feature_dim=getattr(decoder_config, "latent_feature_dim", 10),
+                hidden_feature_dim=getattr(decoder_config, "hidden_feature_dim", 32),
+                output_feature_dim=getattr(decoder_config, "output_feature_dim", 3),
+                num_decoder_layers=getattr(decoder_config, "num_layers", 3),
+                layer_type=getattr(decoder_config, "layer_type", "HGAT"),
+                dropout=getattr(decoder_config, "dropout", 0.0),
+                edge_dim=getattr(decoder_config, "edge_dim", 1),
+                normalization_factor=getattr(decoder_config, "normalization_factor", 1.0),
+                aggregation_method=getattr(decoder_config, "aggregation_method", "sum"),
+                message_transformation=getattr(decoder_config, "message_transformation", "linear"),
+                aggregation_transformation=getattr(
+                    decoder_config, "aggregation_transformation", "linear"
+                ),
+                use_normalization=getattr(decoder_config, "use_normalization", False),
+                manifold_type=getattr(decoder_config, "manifold_type", "PoincareBall"),
+                curvature=getattr(decoder_config, "curvature", 1.0),
+                learnable_curvature=getattr(decoder_config, "learnable_curvature", False),
+                use_centroid=getattr(decoder_config, "use_centroid", False),
+                input_manifold=(
+                    self.encoder.manifolds[-1] if hasattr(self.encoder, "manifolds") else None
+                ),
             )
-        elif decoder_type == 'CentroidDistanceDecoder':
+        elif decoder_type == "CentroidDistanceDecoder":
             self.decoder = Decoders.CentroidDistanceDecoder(
-                model_dim=getattr(decoder_config, 'hidden_feature_dim', 32),
-                num_classes=getattr(decoder_config, 'num_classes', 3),
-                classifier_dropout=getattr(decoder_config, 'dropout', 0.0)
+                model_dim=getattr(decoder_config, "hidden_feature_dim", 32),
+                num_classes=getattr(decoder_config, "num_classes", 3),
+                classifier_dropout=getattr(decoder_config, "dropout", 0.0),
             )
         else:
             raise ValueError(f"Unsupported decoder type: {decoder_type}")
 
     def _initialize_edge_prediction(self, edge_predictor_config):
         """Initialize edge prediction components based on configuration."""
-        if edge_predictor_config and hasattr(edge_predictor_config, 'type'):
-            if edge_predictor_config.type == 'FermiDiracDecoder':
+        if edge_predictor_config and hasattr(edge_predictor_config, "type"):
+            if edge_predictor_config.type == "FermiDiracDecoder":
                 self.edge_predictor = FermiDiracDecoder(self.encoder.manifold)
-                loss_type = getattr(edge_predictor_config, 'loss_type', 'CrossEntropyLoss')
-                loss_reduction = getattr(edge_predictor_config, 'loss_reduction', 'mean')
-                if loss_type == 'CrossEntropyLoss':
+                loss_type = getattr(edge_predictor_config, "loss_type", "CrossEntropyLoss")
+                loss_reduction = getattr(edge_predictor_config, "loss_reduction", "mean")
+                if loss_type == "CrossEntropyLoss":
                     self.edge_loss_fn = nn.CrossEntropyLoss(reduction=loss_reduction)
                 else:
                     raise ValueError(f"Unsupported edge loss type: {loss_type}")
@@ -202,50 +205,15 @@ class GraphVAE(nn.Module):
             self.edge_predictor = FermiDiracDecoder(self.encoder.manifold)
             self.edge_loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
-    def _initialize_graph_classification(self, graph_classifier_config):
-        """Initialize graph classification components based on configuration."""
-        # Initialize graph prototypes
-        self.graph_prototypes = nn.Parameter(
-            torch.randn(self.num_graph_classes, self.latent_dim * 2)
-        )
+    def _initialize_graph_prototypes(self):
+        """Initialize graph prototypes for prototype loss if enabled."""
+        # For prototype loss, we still need a reasonable number of prototypes
+        # Default to 3 prototypes unless we have more information
+        num_prototypes = 3
+        self.graph_prototypes = nn.Parameter(torch.randn(num_prototypes, self.latent_dim * 2))
         std = 1.0 / ((self.latent_dim * 2) ** 0.5)
         nn.init.normal_(self.graph_prototypes, mean=0.0, std=std)
 
-        # Initialize graph classification head if enabled
-        if self.pred_graph_class_enabled:
-            if graph_classifier_config and hasattr(graph_classifier_config, 'type'):
-                if graph_classifier_config.type == 'Classifier':
-                    dropout = getattr(graph_classifier_config, 'dropout', 0.1)
-                    use_bias = getattr(graph_classifier_config, 'use_bias', True)
-                    loss_type = getattr(graph_classifier_config, 'loss_type', 'CrossEntropyLoss')
-                    
-                    self.graph_classifier = Decoders.Classifier(
-                        model_dim=self.latent_dim,
-                        num_classes=self.num_graph_classes,
-                        classifier_dropout=dropout,
-                        classifier_bias=use_bias,
-                        manifold=None  # mean_graph is Euclidean
-                    )
-                    
-                    if loss_type == 'CrossEntropyLoss':
-                        self.graph_classification_loss_fn = nn.CrossEntropyLoss()
-                    else:
-                        raise ValueError(f"Unsupported graph classification loss type: {loss_type}")
-                else:
-                    raise ValueError(f"Unsupported graph classifier type: {graph_classifier_config.type}")
-            else:
-                # Default classifier
-                self.graph_classifier = Decoders.Classifier(
-                    model_dim=self.latent_dim,
-                    num_classes=self.num_graph_classes,
-                    classifier_dropout=0.0,
-                    classifier_bias=True,
-                    manifold=None
-                )
-                self.graph_classification_loss_fn = nn.CrossEntropyLoss()
-        else:
-            self.graph_classifier = None
-            self.graph_classification_loss_fn = None
     def forward(self, x, adj, labels):  # labels are graph-level labels
 
         node_mask = node_flags(adj)
@@ -272,8 +240,8 @@ class GraphVAE(nn.Module):
         loss_proto_separation = torch.tensor(0.0, device=x.device)
         mean_graph = None
 
-        # Determine if we need to compute mean_graph (for base_proto_loss or graph_classification_loss)
-        if self.use_base_proto_loss or self.pred_graph_class_enabled:
+        # Determine if we need to compute mean_graph (for base_proto_loss)
+        if self.use_base_proto_loss:
             emb_from_posterior = posterior.mode()  # Points on the manifold or in Euclidean space
 
             if emb_from_posterior.dim() == 2:
@@ -341,35 +309,6 @@ class GraphVAE(nn.Module):
         else:  # 如果不使用 sep_proto_loss
             loss_proto_separation = torch.tensor(0.0, device=x.device)
 
-        # Graph classification loss calculation
-        graph_classification_loss = torch.tensor(0.0, device=x.device)
-        graph_classification_acc = 0.0
-
-        if self.pred_graph_class_enabled:
-            if mean_graph is None:
-                # This should not happen if use_graph_classifier is true due to the combined check above
-                # but as a safeguard or if logic changes:
-                raise ValueError(
-                    "mean_graph is None but pred_graph_class is True. This indicates a bug."
-                )
-            if self.graph_classifier is None or self.graph_classification_loss_fn is None:
-                raise ValueError(
-                    "Graph classifier or its loss function is not initialized. Check config for pred_graph_class."
-                )
-
-            # Get logits directly from the classifier's decode method
-            # mean_graph is [Batch, DimLatent*2], suitable as 'h' for Classifier.decode
-            # The 'adj' argument for Classifier.decode is not used by its internal cls layer.
-            graph_class_logits = self.graph_classifier.decode(mean_graph, adj=None)
-
-            graph_classification_loss = self.graph_classification_loss_fn(
-                graph_class_logits, labels
-            )
-            pred_labels_graph_classifier = torch.argmax(graph_class_logits, dim=1)
-            graph_classification_acc = (
-                (pred_labels_graph_classifier == labels).float().mean().item()
-            )
-
         if self.pred_edge_enabled:
             triu_mask = torch.triu(edge_mask, 1)[:, :, :, None]
             edge_pred = self.edge_predictor(posterior.mode()) * triu_mask
@@ -398,8 +337,6 @@ class GraphVAE(nn.Module):
             edge_loss,
             base_loss_proto,
             loss_proto_separation,
-            graph_classification_loss,  # Added graph classification loss
-            graph_classification_acc,  # Added graph classification accuracy
         )
 
 
